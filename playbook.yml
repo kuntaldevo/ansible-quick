@@ -1,0 +1,205 @@
+---
+- import_playbook: manage-aws-instances.yml
+
+- hosts: localhost
+  any_errors_fatal: true
+  vars_files:
+    - customization.yml
+    - defaults.yml
+  vars:
+
+    ###Local Repository URL###
+    ###paxata_repo_base_url: http://core:8414/pax/efs/flash/GA/{{ paxata_version }}
+    ###spark_repo_base_url: http://core:8414/pax/efs/flash/GA/{{ paxata_version }}/ansible
+    ###mongo_repo_base_url_offline: http://core:8414/pax/efs/flash/GA/{{ paxata_version }}/ansible
+
+    ###Remote Repository URL###
+    paxata_repo_base_url: "https://flash.paxata.com/GA/{{ paxata_version }}"
+    spark_repo_base_url: "https://archive.apache.org/dist/spark/spark-{{ spark_version }}"
+    mongo_repo_base_url: "https://repo.mongodb.org/yum/redhat/7/mongodb-org/{{ mongo_version | regex_replace('^([0-9])\\.([0-9]*).*', '\\1.\\2') }}/x86_64/RPMS"
+
+    ################################################ DO NOT EDIT ANY VARIABLES########################################
+
+
+    ######
+    # paxata connector download information
+    ######
+    connector_zip_url: "{{ paxata_repo_base_url }}/connectors"
+
+    ######
+    # pipeline and spark information
+    ######
+    pipeline_rpm_url: "{{ paxata_repo_base_url }}/paxata-pipeline-{{ pipeline_spark_distro }}-{{ pipeline_version }}.rpm"
+    pipeline_rpm_md5_url: "{{ paxata_repo_base_url }}/paxata-pipeline-{{ pipeline_spark_distro }}-{{ pipeline_version }}.rpm.md5"
+    gateway_rpm_url: "{{ paxata_repo_base_url }}/paxata-gateway-{{ gateway_spark_distro }}-{{ pipeline_version }}.rpm"
+    gateway_rpm_md5_url: "{{ paxata_repo_base_url }}/paxata-gateway-{{ gateway_spark_distro }}-{{ pipeline_version }}.rpm.md5"
+
+
+    spark_tgz_url: "{{ spark_repo_base_url }}/{{ spark_filename }}.tgz"
+    spark_tgz_sha512_url: "{{ spark_tgz_url }}.sha512"
+
+
+
+    ################################################ DO NOT EDIT ANY VARIABLES########################################
+  #This will read the username and password of flash from properties file, make sure this file has  readonly access only for authorized user.
+
+  #    flash_username: "{{ lookup('ini', 'flashuser.name type=properties file=flashuser.properties') }}"
+  #    flash_password: "{{ lookup('ini', 'flashuser.password type=properties file=flashuser.properties') }}"
+
+  #If you want to prompt for username and password then uncomment the below lines
+
+  vars_prompt:
+    - name: flash_username
+      prompt: "What is your https://flash.paxata.com/GA username"
+      private: no
+    - name: flash_password
+      prompt: "What is your https://flash.paxata.com/GA password"
+      private: yes
+
+  roles:
+    - localdownload
+
+- hosts: all
+  any_errors_fatal: true
+  become: true
+  vars_files:
+    - customization.yml
+    - defaults.yml
+  roles:
+    - bootstrap
+
+
+# spark-worker plays before spark-master and pipeline, as the spark_worker_memory, spark_worker_cores and spark_worker_cache_capacity_mb are based on 1st spark worker host facts.
+- hosts: spark-worker
+  any_errors_fatal: true
+  become: true
+  vars:
+    executor_memory_ram_ratio: 0.6 # 0.5 means half of the ram would be allocated for pipeline executor memory, leaving the other half for gateway dynamic batch executor memory and off heap memory.
+    ## formula to calculate memory and core based on available memory on worker host. Can be overriden by hard coded value.
+    spark_worker_memory: "{{ (ansible_memtotal_mb * executor_memory_ram_ratio)|round|int }}m"
+    spark_worker_cores: "{% if (ansible_memtotal_mb * executor_memory_ram_ratio) < minimum_spark_memory_per_spark_core_mb %}1{% else %}{{ [(ansible_memtotal_mb*executor_memory_ram_ratio/minimum_spark_memory_per_spark_core_mb)|round|int, ansible_processor_vcpus]|min }}{% endif %}"
+    minimum_iops_per_core: 100
+  roles:
+    - spark-worker
+
+- hosts: spark-master
+  any_errors_fatal: true
+  become: true
+  vars:
+    spark_worker_memory: "{{ hostvars[groups['spark-worker'][0]]['spark_worker_memory'] }}"
+    spark_worker_cores: "{{ hostvars[groups['spark-worker'][0]]['spark_worker_cores'] }}"
+  roles:
+    - spark-master
+
+- hosts: mongodb
+  any_errors_fatal: true
+  become: true
+  vars_files:
+    - defaults.yml
+    - customization.yml
+  vars:
+    min_mongo_host_free_disk_capacity: 15000 # minimum free disk space to allow mongodump and upload mongodump to S3 (MB)
+    mongo_download_dir: /tmp
+    mongodb_logPath: /usr/local/paxata/mongo/mongod.log
+    mongodb_pidFilePath: /var/run/mongodb/mongod.pid # location of pidfile
+    mongodb_enableFork: true # fork and run in background
+    mongodb_enableJournal: true
+    mongoReplicaSetName: rs_paxata
+  roles:
+    - role: simple-mongodb
+      when: install_mongo
+
+
+- hosts: pipeline
+  any_errors_fatal: true
+  become: true
+  vars_files:
+    - defaults.yml
+    - customization.yml
+  vars:
+    pipeline_version: "{{ hostvars['localhost']['pipeline_version'] }}"
+    spark_worker_cache_capacity_mb: "{{ hostvars[groups['spark-worker'][0]]['spark_worker_cache_capacity_mb'] }}"
+    spark_worker_memory: "{{ hostvars[groups['spark-worker'][0]]['spark_worker_memory'] }}"
+    spark_worker_cores: "{{ hostvars[groups['spark-worker'][0]]['spark_worker_cores'] }}"
+  roles:
+    - pax-pipeline
+
+
+
+- hosts: gateway
+  any_errors_fatal: true
+  become: true
+  vars_files:
+    - defaults.yml
+    - customization.yml
+  vars:
+    gateway_version: "{{ hostvars['localhost']['gateway_version'] }}"
+    pipeline_version: "{{ hostvars['localhost']['pipeline_version'] }}"
+    hdfs_base_path: "/user/paxata/gateway/staging" # Used for gateway config only
+    hadoop_home: /etc/hadoop # Used for gateway config only
+  roles:
+    - gateway
+
+- hosts: core-server
+  any_errors_fatal: true
+  become: true
+  vars_files:
+    - defaults.yml
+    - customization.yml
+  vars:
+    pax_server_version: "{{ hostvars['localhost']['pax_server_version'] }}"
+    connector_version: "{{ hostvars['localhost']['connector_version'] }}"
+    ######
+    # paxata software download information
+    ######
+    #pax_server_rpm_url: "{{ paxata_repo_base_url }}/paxata-server-{{ pax_server_version }}.rpm"
+    #pax_server_rpm_local: /tmp/paxata-server-{{ pax_server_version }}.rpm
+    #pax_server_rpm_md5_url: "{{ paxata_repo_base_url }}/paxata-server-{{ pax_server_version }}.rpm.md5"
+    #pax_server_rpm_md5_local: /tmp/paxata-server-{{ pax_server_version }}.rpm.md5
+
+
+    pax_server_encryption_keystore_keyBits: 128 # Default key strength for encryption, other values are 192 or 256 . Install JCE security extension for size other than 128.
+
+    ######
+    # Guardrail Limit Calculation. Can be overriden using hard coded values.
+    ######
+    spark_worker_cores: "{{ hostvars[groups['spark-worker'][0]]['spark_worker_cores'] }}"
+    worker_core_count: "{{ (worker_instance_count|int)*(spark_worker_cores|int) }}"
+    project_row_limit: "{{ 50000 if (worker_core_count|int)<=4 else 500000 if (worker_core_count|int)<=8 else (2.3*(11000000*(worker_core_count|int)/(111-(worker_core_count|int))))|int if (worker_core_count|int)<=16 else (2.7*(11000000*(worker_core_count|int)/(111-(worker_core_count|int))))|int if (worker_core_count|int)<=32 else (11000000*(worker_core_count|int)/(111-(worker_core_count|int)))|int if (worker_core_count|int)<=50 else ((worker_core_count|int)*1000000/1.28)|int if (worker_core_count|int)<=250 else 5000000000 }}"
+    library_row_limit: "{{ (project_row_limit|int)*3 }}"
+    project_column_limit: "{{ 100 if (worker_core_count|int)<32 else 200 if (worker_core_count|int)<64 else 300 }}"
+    library_column_limit: "{{ project_column_limit }}"
+    bytes_per_cell: 10
+    file_size_limit: "{{ (library_column_limit|int)*(library_row_limit|int)*(bytes_per_cell|int) }}"
+    interactive_row_warning: "{{ ((project_row_limit|int)*0.9)|int }}"
+    import_thread_limit: "{{ ansible_processor_cores }}"
+    rest_task_limit: "{{ (ansible_processor_cores|int)*2 }}"
+    pipeline_task_limit: "{{ (ansible_processor_cores|int)*2 }}"
+    library_task_limit: "{{ (ansible_processor_cores|int)*2 }}"
+    enable_grid_progress_reporting: true
+    enable_column_profiling: true
+    enable_automation: true
+    batch_gateway_url: "{% if groups['gateway'] is defined and groups['gateway']|length>0 %}http://{{ groups['gateway'][0] }}:8071{% else %}{% endif %}"
+    enable_gateway_for_batch_requests: "{{ groups['gateway'] is defined and groups['gateway']|length>0 }}"
+    enable_separate_interactive_batch_row_limits: "{{ groups['gateway'] is defined and groups['gateway']|length>0 }}"
+    gateway_cores_per_executor: 1
+    gateway_memory_per_executor: "4375m"
+    gateway_additional_args: "spark.yarn.appMasterEnv.px.cache.ephemeral=true"
+    batch_project_row_limit: "{{ (project_row_limit|int)*10 }}"
+    interactive_dataset_row_limit: "{{ ((project_row_limit|int)*0.5)|int }}"
+    daily_automation_job_limit: 24
+    weekly_automation_job_limit: "{{ (daily_automation_job_limit|int)*7 }}"
+    monthly_automation_job_limit: "{{ (daily_automation_job_limit|int)*30 }}"
+    # Guardrail Override -- Test Only
+    #project_row_limit: "500000000"
+    #project_column_limit: "500"
+    #library_column_limit: "500"
+    #import_thread_limit: 10
+    #rest_task_limit: 20
+    #pipeline_task_limit: 20
+    #library_task_limit: 20
+
+
+
+  roles:
+  - pax-server

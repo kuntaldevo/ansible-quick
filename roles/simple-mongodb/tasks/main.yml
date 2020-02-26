@@ -1,0 +1,393 @@
+---
+
+- name: Extract Mongo version service name
+  shell: "rpm -qa | grep \"mongodb-org-\" | cut -d'-' -f3"
+  register: installed_mongo_version
+  args:
+    warn: false # set warn=false to prevent warning
+
+- name: Setting expected gateway version
+  set_fact:
+    expected_mongo_version: "{{ mongo_version }}"
+
+
+
+- debug:
+    msg: "Existing mongo server version  = {{ installed_mongo_version.stdout }} and expected version is  {{ expected_mongo_version }}"
+
+- name: Fail if existing core server rpm is detected but does not match with expected version and its not an upgrade
+  fail:
+    msg: "Existing Paxata core server RPM found but it does not match with expected version and its not an upgrade"
+  when:
+    - not upgrade_flag and installed_mongo_version is defined and installed_mongo_version.stdout | length > 0 and ( installed_mongo_version.stdout != expected_mongo_version)
+
+
+
+- name: Copy Mongo rpm files from ansible controller
+  copy:
+    src: "{{ mongo_download_path }}/{{ item }}"
+    dest: "{{ remote_install_location }}/{{ item }}"
+    mode: 0755
+  with_items: "{{ mongodb_packages }}"
+  when:
+    - not (not upgrade_flag and installed_mongo_version is defined and installed_mongo_version.stdout | length > 0 and ( installed_mongo_version.stdout != expected_mongo_version) )
+
+- name: get free disk capacity from {{ mongodump_local_dir }}
+  shell: "df -Pm {{ mongodump_local_dir }} | tail -1 | awk '{print $4}'"
+  register: mongo_df_output
+  when: inventory_hostname == (groups['mongodb'] | last)
+  tags:
+  - mongodump_upload
+
+- debug: msg="Available disk space for {{ mongodump_local_dir }}={{ mongo_df_output.stdout|int }}mb. Minimum capacity to allow mongo backup and upload to S3 bucket is {{ min_mongo_host_free_disk_capacity }}mb."
+  when: inventory_hostname == (groups['mongodb'] | last)
+
+
+- name: Create Script to back up Mongo
+  template:
+    src: mongobackup.sh.j2
+    dest: "{{ mongodump_local_dir }}/mongobackup.sh"
+    owner: mongod
+    group: mongod
+    mode: 0755
+  when:
+  - inventory_hostname == (groups['mongodb'] | last)
+  - mongo_df_output.stdout|int > min_mongo_host_free_disk_capacity
+
+
+- name: Before upgrade take mongo backup
+  shell: "{{ mongodump_local_dir }}/mongobackup.sh"
+  register: backup_result
+  when:
+    - upgrade_flag  and installed_mongo_version.stdout | length > 0
+    - inventory_hostname == (groups['mongodb'] | last)
+    - mongo_df_output.stdout|int > min_mongo_host_free_disk_capacity
+
+
+- name: Install Mongo RPM Files.
+  yum:
+    name: "{{ remote_install_location }}/{{ item }}"
+    disablerepo: "*"
+    state: present
+  with_items: "{{ mongodb_packages }}"
+  when:
+  -  upgrade_flag or installed_mongo_version.stdout | length == 0
+
+- name: Update /etc/security/limits.conf for soft nofile
+  lineinfile: dest=/etc/security/limits.conf
+              line="mongod soft nofile 100000"
+- name: Update /etc/security/limits.conf for hard nofile
+  lineinfile: dest=/etc/security/limits.conf
+              line="mongod hard nofile 100000"
+- name: Update /etc/security/limits.conf for soft noproc
+  lineinfile: dest=/etc/security/limits.conf
+              line="mongod soft noproc 5000"
+- name: Update /etc/security/limits.conf for hard noproc
+  lineinfile: dest=/etc/security/limits.conf
+              line="mongod hard noproc 5000"
+- name: Create /usr/local/paxata/mongo if they don't exist
+  file:
+    path: /usr/local/paxata/mongo
+    state: directory
+    owner: mongod
+    group: mongod
+    mode: 0755
+- name: Create Mongo DBPath if they don't exist
+  file:
+    path: "{{ mongodb_dbPath }}"
+    state: directory
+    owner: mongod
+    group: mongod
+    mode: 0755
+
+- name: Create Mongodump Backup Path if they don't exist
+  file:
+    path: "{{ mongodump_local_dir }}"
+    state: directory
+    owner: mongod
+    group: mongod
+    mode: 0755
+
+- name: Touch Mongo Log File
+  file:
+    path: "{{ mongodb_logPath }}"
+    state: touch
+    owner: mongod
+    group: mongod
+    mode: 0755
+
+- name: Configure MongoDB 
+  template:
+    src: "mongod.conf.j2"
+    dest: "/etc/mongod.conf"
+    owner: root
+    group: root
+    mode: 0644
+    
+- name: restart service mongod on centos, in all cases, also issue daemon-reload to pick up config changes
+  systemd:
+    state: restarted
+    daemon_reload: yes
+    name: mongod
+  when:
+    - ansible_distribution != "Amazon"
+
+- name: restart service mongod on Amazon Linux
+  shell: "service mongod restart"
+  args:
+    warn: false # set warn=false to prevent warning
+  when:
+    - ansible_distribution == "Amazon"
+  
+- name: Wait until All MongoDB Port is available
+  wait_for:
+    host: "{{ item }}"
+    port: 27017
+    delay: 3
+  with_items:
+    - "{{ groups['mongodb'] }}"
+  when:
+    - inventory_hostname == groups['mongodb'][0]
+    - ( groups['mongodb']|length ) > 1
+  
+- name: Create file to initiate replica set
+  template: 
+    src: initReplicaSet.j2
+    dest: /usr/local/paxata/mongo/initReplicaSet.js
+  when:
+    - inventory_hostname == groups['mongodb'][0]
+    - (groups['mongodb']|length) > 1
+
+- name: Initialize the replica set
+  command: mongo /usr/local/paxata/mongo/initReplicaSet.js
+  register: init_result
+  when:
+    - inventory_hostname == groups['mongodb'][0]
+    - (groups['mongodb']|length) > 1
+  
+- debug: msg="{{ init_result.stdout_lines }}"
+  when:
+    - inventory_hostname == groups['mongodb'][0]
+    - (groups['mongodb']|length) > 1
+
+
+
+
+- name: Check that the {{ mongodump_local_dir }}/{{ ansible_date_time.date }} exists
+  stat: path={{ mongodump_local_dir }}/{{ ansible_date_time.date }}/*/*.tgz
+  register: todays_mongodump_exists
+  when:
+    - inventory_hostname == (groups['mongodb'] | last)
+    - mongo_df_output.stdout|int > min_mongo_host_free_disk_capacity
+
+- name: stdout result of whether todays mongodump exists
+  debug:
+    var: todays_mongodump_exists.stat.exists
+  when:
+    - inventory_hostname == (groups['mongodb'] | last)
+    - mongo_df_output.stdout|int > min_mongo_host_free_disk_capacity
+
+- name: Take a mongo dump and delete mongodumps if older than 7 days
+  shell: "{{ mongodump_local_dir }}/mongobackup.sh"
+  register: backup_result
+  when:
+    - inventory_hostname == (groups['mongodb'] | last)
+    - mongo_df_output.stdout|int > min_mongo_host_free_disk_capacity
+    - todays_mongodump_exists.stat.exists == false
+
+- name: stdout result of mongodump (last ten lines only)
+  debug:
+    var: backup_result.stdout_lines[-10:]
+  when:
+    - inventory_hostname == (groups['mongodb'] | last)
+    - mongo_df_output.stdout|int > min_mongo_host_free_disk_capacity
+    - todays_mongodump_exists.stat.exists == false
+
+- name: stderr result of mongodump
+  debug:
+    var: backup_result.stderr_lines
+  when:
+    - inventory_hostname == (groups['mongodb'] | last)
+    - mongo_df_output.stdout|int > min_mongo_host_free_disk_capacity
+    - todays_mongodump_exists.stat.exists == false
+
+- name: Creates a cron file under /etc/cron.d
+  cron:
+    name: daily mongo backup to tgz file
+    minute: 0
+    hour: 2
+    user: root
+    job: "{{ mongodump_local_dir }}/mongobackup.sh"
+  when:
+    - inventory_hostname == (groups['mongodb'] | last)
+    - mongo_df_output.stdout|int > min_mongo_host_free_disk_capacity
+
+- name: Install epel
+  yum:
+    name: https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
+    state: present
+  when:
+    - paxata_repo_base_url is search("https://flash.paxata.com/GA")
+    - ansible_distribution != "Amazon"
+
+- name: Install Pip
+  shell: "yum -y install python-pip;pip install --upgrade pip;"
+  args:
+    warn: false # set warn=false to prevent warning
+  when: 
+    - paxata_repo_base_url is search("https://flash.paxata.com/GA")
+    - ansible_distribution != "Amazon"
+
+- name: Install pymongo to support mongodb_user
+  shell: "pip install --upgrade pymongo;"
+  args:
+    warn: false # set warn=false to prevent warning
+  when: 
+    - paxata_repo_base_url is search("https://flash.paxata.com/GA")
+    - ansible_distribution != "Amazon"
+
+- name: Install awscli for backing up mongodump to s3 bucket
+  shell: "pip install --upgrade awscli;"
+  when:
+    - inventory_hostname == (groups['mongodb'] | last)
+    - library_distribution == "aws"
+    - library_storage == "simple"
+    - ansible_distribution != "Amazon"
+  args:
+    warn: false # set warn=false to prevent warning
+  tags:
+    - mongodump_upload
+  
+- name: Create Script to copy Mongodump to S3
+  template: 
+    src: copyToS3.sh.j2
+    dest: "{{ mongodump_local_dir }}/copyToS3.sh"
+    owner: mongod
+    group: mongod
+    mode: 0755
+  when:
+    - library_storage == "simple"
+    - library_distribution == "aws"
+    - inventory_hostname == (groups['mongodb'] | last)
+    - mongo_df_output.stdout|int > min_mongo_host_free_disk_capacity
+  tags:
+    - mongodump_upload
+  
+- name: Copy mongodump to S3 bucket
+  shell: "{{ mongodump_local_dir }}/copyToS3.sh"
+  register: upload_result
+  when:
+    - library_storage == "simple"
+    - library_distribution == "aws"
+    - inventory_hostname == (groups['mongodb'] | last)
+    - mongo_df_output.stdout|int > min_mongo_host_free_disk_capacity
+  tags:
+    - mongodump_upload
+
+- name: stdout result of upload mongodump to S3 bucket (last ten lines only)
+  debug:
+    var: upload_result.stdout_lines[-10:]
+  when:
+    - library_storage == "simple"
+    - library_distribution == "aws"
+    - inventory_hostname == (groups['mongodb'] | last)
+    - mongo_df_output.stdout|int > min_mongo_host_free_disk_capacity
+  tags:
+    - mongodump_upload
+
+- name: stderr result of upload mongodump to S3 bucket
+  debug:
+    var: upload_result.stderr_lines
+  when:
+    - library_storage == "simple"
+    - library_distribution == "aws"
+    - inventory_hostname == (groups['mongodb'] | last)
+    - mongo_df_output.stdout|int > min_mongo_host_free_disk_capacity
+  tags:
+    - mongodump_upload
+  
+- name: See if new mongodump is created
+  stat: path={{ mongodump_local_dir }}/{{ ansible_date_time.date }}/{{ ansible_date_time.date }}.tgz
+  register: new_mongodump_created
+  when:
+    - library_storage == "simple"
+    - library_distribution == "aws"
+    - inventory_hostname == (groups['mongodb'] | last)
+    - mongo_df_output.stdout|int > min_mongo_host_free_disk_capacity
+  tags:
+    - mongodump_upload
+  
+- name: Creates a cron file under /etc/cron.d for upload mongodump to s3 
+  cron:
+    name: daily upload mongodump to s3
+    minute: 0
+    hour: 3
+    user: root
+    job: "{{ mongodump_local_dir }}/copyToS3.sh"
+  when:
+    - library_storage == "simple"
+    - library_distribution == "aws"
+    - inventory_hostname == (groups['mongodb'] | last)
+    - mongo_df_output.stdout|int > min_mongo_host_free_disk_capacity
+    - new_mongodump_created.stat.exists == true
+  tags:
+    - mongodump_upload
+
+
+- name: Stop service mongod on centos, in all cases, also issue daemon-reload to pick up config changes
+  systemd:
+    state: stopped
+    daemon_reload: yes
+    name: mongod
+  when:
+  - ansible_distribution != "Amazon"
+  tags:
+    - stop-app-mongo
+    - never
+
+- name: Stop service mongod on Amazon Linux
+  shell: "service mongod stop"
+  args:
+    warn: false # set warn=false to prevent warning
+  when:
+    - ansible_distribution == "Amazon"
+  tags:
+    - stop-app-mongo
+    - never
+
+- name: Start service mongod on centos, in all cases, also issue daemon-reload to pick up config changes
+  systemd:
+    state: started
+    daemon_reload: yes
+    name: mongod
+  when:
+    - ansible_distribution != "Amazon"
+  tags:
+    - start-app-mongo
+    - never
+
+- name: Start service mongod on Amazon Linux
+  shell: "service mongod start"
+  args:
+    warn: false # set warn=false to prevent warning
+  when:
+    - ansible_distribution == "Amazon"
+  tags:
+    - start-app-mongo
+    - never
+
+- name: Wait until All MongoDB Port is available
+  wait_for:
+    host: "{{ item }}"
+    port: 27017
+    delay: 3
+  with_items:
+    - "{{ groups['mongodb'] }}"
+  when:
+    - inventory_hostname == groups['mongodb'][0]
+    - ( groups['mongodb']|length ) > 1
+  tags:
+    - start-app-mongo
+    - never
+
+

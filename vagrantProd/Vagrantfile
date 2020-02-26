@@ -1,0 +1,62 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+VAGRANTFILE_API_VERSION = "2"
+
+Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
+ config.hostmanager.enabled = true
+ config.hostmanager.manage_host = true
+ config.hostmanager.manage_guest = true
+ config.hostmanager.ignore_private_ip = false
+ config.hostmanager.include_offline = true
+  config.ssh.insert_key = false
+  config.vm.provider :virtualbox do |v|
+	v.memory = 3072
+	v.cpus = 1
+  end
+
+# MongoDB
+#  (1..3).each do |i|
+#    config.vm.define "mongo#{i}" do |mongo|
+#      mongo.vm.hostname = "mongo#{i}"
+#      mongo.vm.box = "geerlingguy/centos7"
+#      mongo.vm.network :private_network, ip: "192.168.60.20#{i}"
+#    end
+#  end
+
+  # Paxata Core Server
+  config.vm.define "paxcore" do |core|
+    core.vm.hostname = "core"
+    core.vm.box = "geerlingguy/centos7"
+    core.vm.network :private_network, ip: "192.168.60.4"
+  end
+  
+  # Paxata Data Server
+  config.vm.define "paxdata" do |data|
+    data.vm.hostname = "data"
+    data.vm.box = "geerlingguy/centos7"
+    data.vm.network :private_network, ip: "192.168.60.6"
+  end
+
+  # Paxata Automation Server
+  config.vm.define "paxauto" do |auto|
+    auto.vm.hostname = "auto"
+    auto.vm.box = "geerlingguy/centos7"
+    auto.vm.network :private_network, ip: "192.168.60.7"
+  end
+
+  # Paxata Pipeline / Spark Master.
+  config.vm.define "pipelinemaster" do |pm|
+    pm.vm.hostname = "pm"
+    pm.vm.box = "geerlingguy/centos7"
+    pm.vm.network :private_network, ip: "192.168.60.5"
+  end
+  
+  # Spark Worker 1 to 2.
+  (1..4).each do |i|
+    config.vm.define "worker#{i}" do |worker|
+      worker.vm.hostname = "worker#{i}"
+      worker.vm.box = "geerlingguy/centos7"
+      worker.vm.network :private_network, ip: "192.168.60.10#{i}"
+    end
+  end
+end

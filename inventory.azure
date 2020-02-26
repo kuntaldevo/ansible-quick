@@ -1,0 +1,59 @@
+# Sample Inventory Setup:
+# All servers in the same subset, same VPC, security groups that can talk to each other on all TCP ports
+# 10+  instances
+# 3 mongo
+# 1 or 2 paxata-server
+# 1 spark master with pipeline
+# 4 or more Apache spark on EC2
+# For Adapative Workload Management (AWM),  in azure we will use same Interactive Cluster for batch processes.
+# If you need second cluster for Adaptive Workload Management ( AWM ) , please contact support to spin up second spark cluster.
+
+[mongodb]
+mongo1 ansible_host=10.240.1.70 votes=1 priority=1 private_ip=10.240.1.70 ansible_become_pass=EnterYourPassword
+mongo2 ansible_host=10.240.1.71 votes=0 priority=0 private_ip=10.240.1.72 ansible_become_pass=EnterYourPassword
+mongo3 ansible_host=10.240.1.72 votes=0 priority=0 private_ip=10.240.1.73 ansible_become_pass=EnterYourPassword
+
+# 1st core server is configured as frontend server
+# If specified, 2nd core server is configured as automation server
+# Maximum number of core servers = 2
+# If use_etc__hosts: false in playbook, then replace core,auto and data with actual host name of the servers
+[core-server]
+pax-ui ansible_host=10.0.1.5 private_ip=10.0.1.5  ansible_become_pass=EnterYourPassword
+pax-auto ansible_host=10.0.1.7 private_ip=10.0.1.7  ansible_become_pass=EnterYourPassword
+
+# Pipeline and spark-master usually on the same server
+# If use_etc__hosts: false in playbook, then replace pm with actual host name of the server
+[pipeline]
+master ansible_host=10.0.1.8 private_ip=10.0.1.8  ansible_become_pass=EnterYourPassword
+
+# If no spark master host is specified, then EXISTING spark-on-yarn cluster is implied and spark-worker hosts are YARN Node Manager hosts
+[spark-master]
+master ansible_host=10.0.1.8 private_ip=10.0.1.8 ansible_become_pass=EnterYourPassword
+
+# Production minimum number of spark-workers: 4
+# Test/POC minimum number of spark-workers: 4
+# If use_etc__hosts: false in playbook, then replace worker1,worker2,etc... with actual host name of the servers
+[spark-worker]
+worker1 ansible_host=10.0.1.9 private_ip=10.0.1.9  ansible_become_pass=EnterYourPassword
+worker2 ansible_host=10.0.1.10 private_ip=10.0.1.10  ansible_become_pass=EnterYourPassword
+worker3 ansible_host=10.0.1.11 private_ip=10.0.1.11  ansible_become_pass=EnterYourPassword
+worker4 ansible_host=10.0.1.12 private_ip=10.0.1.12  ansible_become_pass=EnterYourPassword
+
+# Group 'multi' with all servers
+[multi:children]
+mongodb
+core-server
+pipeline
+spark-master
+spark-worker
+
+# Variables that will be applied to all servers, either use ansible_ssh_pass or ansible_ssh_private_key_file
+[multi:vars]
+ansible_ssh_user=paxata
+ansible_ssh_pass=EnterYourPassword
+#ansible_ssh_private_key_file=~/dev-keypair-west.pem
+
+#[all:vars]
+#ansible_connection=ssh
+#ansible_user=paxata
+#ansible_ssh_pass=EnterYourPassword

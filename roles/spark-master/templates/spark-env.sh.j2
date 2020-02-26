@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+### Change the following to specify a real cluster's Master host
+export SPARK_MASTER_HOST={{ groups['spark-master'][0] }}
+export SPARK_LAUNCH_WITH_SCALA=0
+export SPARK_LIBRARY_PATH=${SPARK_HOME}/jars
+export SPARK_MASTER_WEBUI_PORT=18080
+export SPARK_MASTER_PORT=7077
+export SPARK_WORKER_PORT=7078
+export SPARK_WORKER_WEBUI_PORT=18081
+export SPARK_WORKER_DIR={{ spark_worker_dir }}
+export SPARK_LOG_DIR={{ spark_log_dir }}
+export SPARK_PID_DIR={{ spark_pid_dir }}
+export SPARK_LOCAL_DIRS={{ spark_local_dirs }}
+export SPARK_WORKER_INSTANCES=1
+export SPARK_WORKER_CORES={{ spark_worker_cores }}
+export SPARK_WORKER_MEMORY={{ spark_worker_memory }}
+export SPARK_DAEMON_MEMORY=256m

@@ -1,0 +1,19 @@
+<configuration>
+  <property>
+      <name>fs.defaultFS</name>
+      <value>{{ azure_wasb_protocol }}://{{ azure_blob_container_name }}@{{ azure_blob_account_full_name }}</value>
+  </property>
+  <property>
+      <name>fs.AbstractFileSystem.wasb.impl</name>
+      <value>org.apache.hadoop.fs.azure.Wasb</value>
+  </property>
+  <property>
+      <name>fs.AbstractFileSystem.wasbs.impl</name>
+      <value>org.apache.hadoop.fs.azure.Wasbs</value>
+  </property>
+  <property>
+      <name>fs.azure.account.key.{{ azure_blob_account_full_name }}</name>
+      <value>{{ azure_blob_account_key }}</value>
+  </property>
+
+</configuration>

@@ -1,0 +1,45 @@
+#!/bin/bash
+# Create Backup directory
+t=$(date +"%Y-%m-%d-%T")
+mod=${t//[:]/_}
+d=$(date +"%Y-%m-%d")
+capacity=$(df -Pm {{ mongodump_local_dir }} | tail -1 | awk '{print $4}')
+quantity=$(sudo find {{ mongodump_local_dir }}/*/*.tgz | wc -l)
+
+if [ ! -d {{ mongodump_local_dir }}/$d/$mod ]; then
+	sudo mkdir -p {{ mongodump_local_dir }}/$d/$mod;
+fi
+
+t1=$(date +"%T %Y-%m-%d")
+if [ $capacity -lt {{ min_mongo_host_free_disk_capacity }} ]; then
+	sudo find {{ mongodump_local_dir }}/*/* -mmin +$((60*24)) -exec rm -rf {} \;
+	capacity=$(df -Pm {{ mongodump_local_dir }} | tail -1 | awk '{print $4}')
+	echo "$t1 Deleted {{ mongodump_local_dir }}/*/* which is older than 24 hours to clear space (after-delete capacity: $capacity mb)" >> {{ mongodump_local_dir }}/$d/$mod/paxata.log
+fi
+
+
+if [ $capacity -gt {{ min_mongo_host_free_disk_capacity }} ]; then
+	
+	# Dump from mongodb host into backup directory
+	sudo mongodump --db {{ mongodb_name }} --out {{ mongodump_local_dir }}/$d/$mod/ >> {{ mongodump_local_dir }}/$d/$mod/paxata.log 2>&1;
+	t1=$(date +"%T %Y-%m-%d")
+	echo "$t1 Created {{ mongodump_local_dir }}/$d/$mod" >> {{ mongodump_local_dir }}/$d/$mod/paxata.log
+	
+	# Create tar of backup directory
+	/bin/tar cvzf {{ mongodump_local_dir }}/$d/$mod/$mod.tgz {{ mongodump_local_dir }}/$d/$mod/{{ mongodb_name }} >> {{ mongodump_local_dir }}/$d/$mod/paxata.log 2>&1;
+
+    t1=$(date +"%T %Y-%m-%d")
+	echo "$t1 Created {{ mongodump_local_dir }}/$d/$mod/$mod.tgz" >> {{ mongodump_local_dir }}/$d/$mod/paxata.log
+	
+	if [ $quantity -gt 7 ]; then
+		sudo find {{ mongodump_local_dir }}/*/* -mtime +7 -exec rm -rf {} \;
+		capacity=$(df -Pm {{ mongodump_local_dir }} | tail -1 | awk '{print $4}')
+		t1=$(date +"%T %Y-%m-%d")
+		echo "$t1 Deleted {{ mongodump_local_dir }}/*/* which is older than 7 days to clear space (after-delete capacity: $capacity mb)" >> {{ mongodump_local_dir }}/$d/$mod/paxata.log
+	fi
+else
+	t1=$(date +"%T %Y-%m-%d")
+	echo "$t1 {{ mongodump_local_dir }} space is not sufficient ($capacity mb). Capacity must be at least {{ min_mongo_host_free_disk_capacity }}mb." >> {{ mongodump_local_dir }}/$d/$mod/paxata.log
+fi
+
+tail -10 {{ mongodump_local_dir }}/$d/$mod/paxata.log

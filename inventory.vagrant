@@ -1,0 +1,45 @@
+# (Test Only / NOT FOR PRODUCTION!!) Sample Inventory Setup: Single mongo + Single paxata-server + Apache spark on Vagrant VM (No Gateway/Dynamic Batch)
+# All servers in the same Vagrant network that can talk to each other on all TCP ports
+# 4x Vagrant VM Instances
+# VM1(172.31.47.118) running mongoDB,paxata-server
+# VM2(172.31.47.119) running paxata-pipeline,apache-spark-master
+# VM3(172.31.40.221) running apache-spark-worker-1 and pipeline executor
+# VM4(172.31.42.7) running apache-spark-worker-2 and pipeline executor
+
+[mongodb]
+paxcore ansible_host=192.168.60.4 private_ip=192.168.60.4 myrole=mongodb priority=1 votes=1
+## Add 2 more instances below to form replicaSet mongoDB (required for Paxata Production)
+#paxdata ansible_host=192.168.60.6 votes=0 priority=0 private_ip=192.168.60.6 myrole=mongodb
+#paxauto ansible_host=192.168.60.7 votes=0 priority=0 private_ip=192.168.60.7 myrole=mongodb
+
+[core-server]
+paxcore ansible_host=192.168.60.4 private_ip=192.168.60.4 myrole=data_server
+## Add 2 more instances below to form multiple paxata servers, with 2nd instance running data server and 3rd instance running automation server
+#paxdata ansible_host=192.168.60.6 private_ip=192.168.60.6 myrole=auto_server
+#paxauto ansible_host=192.168.60.7 private_ip=192.168.60.7 myrole=ui_server
+
+[pipeline]
+paxcore ansible_host=192.168.60.4 private_ip=192.168.60.4 myrole=paxata-pipeline
+
+[spark-master]
+paxcore ansible_host=192.168.60.4 private_ip=192.168.60.4 myrole=spark-master
+
+[spark-worker]
+#worker1 ansible_host=192.168.60.4 private_ip=192.168.60.4 myrole=spark-worker
+worker2 ansible_host=192.168.60.102 private_ip=192.168.60.102 myrole=spark-worker
+## Add 2 more instances below to run apache-spark-worker and pipeline executor (total of 4 spark workers are minimum requirement for production)
+worker3 ansible_host=192.168.60.103 private_ip=192.168.60.103 myrole=spark-worker
+#worker4 ansible_host=192.168.60.104 private_ip=192.168.60.104 myrole=spark-worker
+
+# Group 'multi' with all servers
+[ec2:children]
+mongodb
+core-server
+pipeline
+spark-master
+spark-worker
+
+# Variables that will be applied to all servers
+[ec2:vars]
+ansible_ssh_user=vagrant
+ansible_ssh_private_key_file=~/.vagrant.d/insecure_private_key

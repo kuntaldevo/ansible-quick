@@ -1,0 +1,7 @@
+---
+- debug: msg="play_hosts={{play_hosts}}"
+
+
+- name: Fail now
+  fail:
+    msg: "Fail now"

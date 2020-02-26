@@ -1,0 +1,642 @@
+---
+- name: Set default upgrade flag Fact as false
+  set_fact:
+    upgrade_flag: false
+
+- name: Set upgrade flag Fact
+  set_fact:
+    upgrade_flag: true
+  tags:
+  - upgrade
+  - never
+
+## only yum install when server has internet access
+- name: Remove previous version of JDK
+  yum:
+    name: '*jdk*'
+    state: absent
+  when:
+    - force_remove_previousjdk
+
+- name: Check initial Java version
+  shell: java -version 2>&1 | awk -F'"' 'NR==1{ print $2 }'
+  register: java_version_initial
+  tags:
+    - check_and_install_java
+
+- name: Check initial Java distro whether openjdk or non-openjdk
+  shell: java -version 2>&1 | awk -F'"' 'NR==1{ print $1 }'
+  register: java_distro_initial
+  tags:
+  - check_and_install_java
+
+- name: Set fact for Java distro
+  set_fact:
+    use_openjdk: "{{ java_distro_initial.stdout != \"\" and java_distro_initial.stdout.split(' ')[0] is search (\"openjdk\") }}"
+  tags:
+  - check_and_install_java
+
+
+- debug:
+    msg: "Current java version is {{ java_version_initial.stdout }} and openJDK distribution is {{ use_openjdk }} "
+
+  tags:
+    - check_and_install_java
+
+- name: Fail if existing java is Orcale JDK and EMR is being used for Dynamic Batch on AWS.
+  fail:
+    msg: "Existing Java is Oracle JDK and EMR is being used for Dynamic Batch on AWS . Open JDK is required, but existing servers have Oracle JDK.
+     For safety, we will quit and not change your JDK. To fix, pease enable force_remove_previousjdk in the customization.yml and try again. This
+     allows the installer to remove your old JDK."
+  when:
+    - use_openjdk is defined and not use_openjdk and java_distro_initial.stdout | length == 0
+    - groups['gateway'] is defined
+    - groups['gateway']|length > 0
+  tags:
+  - check_and_install_java
+
+#to-do differntiate between oracle JDK and Open JDK
+
+- name: Copy JDK rpm  file from ansible controller
+  copy:
+    src: "{{ jdk_download_path }}/{{ jdk_rpm_name }}"
+    dest: "{{ remote_install_location }}/{{ jdk_rpm_name }}"
+  when:
+    - (java_version_initial.stdout == ""  or java_version_initial.stdout.split('_')[0] is  version_compare('1.8.0', '<') or ( use_openjdk and java_version_initial.stdout.split('_')[1] is  version_compare('181', '<') ) or ( not use_openjdk and java_version_initial.stdout.split('_')[1] is  version_compare('162', '<') ))
+  tags:
+    - check_and_install_java
+
+
+- name: Install Latest Open JDK 8 if openJDK version is less than 181 or Oracle JDK version is less than 162, install latest open JDK
+  yum:
+    name: "{{ remote_install_location }}/{{ jdk_rpm_name }}"
+    state: present
+  when:
+    - (java_version_initial.stdout == ""  or java_version_initial.stdout.split('_')[0] is  version_compare('1.8.0', '<') or ( use_openjdk and java_version_initial.stdout.split('_')[1] is  version_compare('181', '<') ) or ( not use_openjdk and java_version_initial.stdout.split('_')[1] is  version_compare('162', '<') ))
+  tags:
+    - check_and_install_java
+
+- name: Fetch Java version
+  shell: java -version 2>&1 | awk -F'"' 'NR==1{ print $2 }'
+  register: java_version
+  tags:
+    - check_and_install_java
+
+- debug: msg="Current java version is {{ java_version.stdout }}"
+  tags:
+    - check_and_install_java
+
+- assert:
+    that:
+    - java_version.stdout is  version_compare('1.8', '>=')
+
+
+- name: Check if ResourceManager is running on pipeline
+  shell: "jps | grep ResourceManager || :"
+  register: rm_running_on_pipeline
+  when: (inventory_hostname in groups['pipeline'])
+
+- debug: msg="{{ rm_running_on_pipeline.stdout != "" }}"
+  when: (inventory_hostname in groups['pipeline'])
+
+- name: Check if NodeManager is running on spark-worker
+  shell: "jps | grep NodeManager || :"
+  register: nm_running_on_spark_worker
+  when: (inventory_hostname in groups['spark-worker'])
+  tags:
+    - start-app-spark
+    - stop-app-spark
+    - iops_test
+
+- debug: msg="{{ nm_running_on_spark_worker.stdout != "" }}"
+  when: (inventory_hostname in groups['spark-worker'])
+
+- name: Set use_existing_spark_on_yarn Fact
+  set_fact:
+    use_existing_spark_on_yarn: "{{ hostvars[groups['spark-worker'][0]]['nm_running_on_spark_worker'].stdout != '' }}"
+  tags:
+    - start-app-spark
+    - stop-app-spark
+    - iops_test
+
+- debug: msg="{{ use_existing_spark_on_yarn }}"
+
+- name: Fail if existing spark_on_yarn is detected but spark-master is set in inventory
+  fail:
+    msg: "Existing ResourceManager and NodeManager process found, but spark-master is set in inventory. Please correct the inventory and try again."
+  when: 
+    - use_existing_spark_on_yarn
+    - groups['spark-master'] is defined
+    - groups['spark-master']|length > 0
+
+- name: Fail if pipeline_spark_distro not set to dbx.x.x and no existing spark_on_yarn detected
+  fail:
+    msg: "pipeline_spark_distro is set to {{ pipeline_spark_distro }}, but no Existing ResourceManager and NodeManager process found on pipeline or spark-worker. Are you sure pipeline will be running on existing spark on yarn cluster?"
+  when: 
+    - not use_existing_spark_on_yarn
+    - pipeline_spark_distro is not search("db")
+
+- name: Fail if pipeline_spark_distro is set to dbx.x.x but existing spark_on_yarn detected
+  fail:
+    msg: "pipeline_spark_distro is set to {{ pipeline_spark_distro }} but existing spark_on_yarn detected. Please set pipeline_spark_distro to emr516 or other ditro not named 'dbx.x.x'"
+  when: 
+    - use_existing_spark_on_yarn
+    - pipeline_spark_distro is search("db")
+
+- name: Check if {{ spark_dir }} exists pipeline and spark-worker
+  stat: path={{ spark_dir }}
+  register: spark_dir_exists
+  when: (inventory_hostname in groups['pipeline']) or (inventory_hostname in groups['spark-worker'])
+
+- name: Fail if existing spark_on_yarn detected but {{ spark_dir }} does not exists
+  fail:
+    msg: "Existing ResourceManager and NodeManager process found, but {{ spark_dir }} does not exists. Please install Supported version of Spark2 on YARN cluster, or update pipeline and spark-worker to non-Hadoop instances."
+  when: (use_existing_spark_on_yarn and not spark_dir_exists) and ((inventory_hostname in groups['pipeline']) or (inventory_hostname in groups['spark-worker']))
+
+- name: get free disk capacity from Root
+  shell: "df -Pm / | tail -1 | awk '{print $4}'"
+  register: df_output
+
+- name: Fail if free disk capcity is less than {{ free_disk_capacity_limit }} MB
+  fail:
+    msg: "Root Volume free capacity is below {{ free_disk_capacity_limit }} MB. Please re-create the instance with the root volume of 100GB and rerun the playbook."
+  when: 
+    - "df_output.stdout|int < free_disk_capacity_limit|int"
+
+- debug: msg="OS information -- {{ ansible_distribution }} {{ ansible_distribution_major_version }}"
+
+- name: Fail if unsupport OS is detected
+  fail:
+    msg: "Paxata only support CentOS 7+, RedHat 7+, and Amazon Linux for EMR"
+  when: 
+    - ansible_distribution != "Amazon"
+    - ansible_distribution != "CentOS"
+    - ansible_distribution != "RedHat"
+
+- name: Fail if OS Version is unsupported
+  fail:
+    msg: "Paxata only support CentOS 7+, Redhat 7+, and Amazon Linux for EMR"
+  when: (ansible_distribution == "CentOS" and ansible_distribution_major_version != "7") or (ansible_distribution == "RedHat" and ansible_distribution_major_version != "7")
+
+- name: Install epel
+  yum:
+    name: https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
+    state: present
+  tags:
+    - iperf3_test
+    - iops_test
+
+
+- name: Get instance type from AWS
+  uri:
+    url: http://169.254.169.254/latest/meta-data/instance-type
+    return_content: yes
+    timeout: 3
+    status_code: 200,-1,404
+  register: ec2_instance_type
+  tags:
+    - iops_test
+
+- debug: msg="EC2 instance type status code --  {{ ec2_instance_type.status }}"
+  when: ec2_instance_type.content != ""
+  tags:
+    - iops_test
+
+- debug: msg="EC2 instance type - {{ ec2_instance_type.content }}"
+  when: ec2_instance_type.status == 200
+  tags:
+    - iops_test
+
+- name: Set variable is_aws_instance
+  set_fact:
+     is_aws_instance: "{{ ec2_instance_type.status == 200 }}"
+  tags:
+    - iops_test
+
+- debug: msg="Is AWS Instance? - {{ is_aws_instance }}"
+  tags:
+    - iops_test
+
+#- name: Get spark worker device name from AWS when instance store - non-NVMe
+#  uri:
+#    url: http://169.254.169.254/latest/meta-data/block-device-mapping/ephemeral0
+#    return_content: yes
+#    status_code: 200,-1,404
+#    timeout: 3
+#  register: spark_worker_device
+#  when: 
+#    - is_aws_instance
+#    - inventory_hostname in groups['spark-worker']
+#  tags:
+#    - iops_test
+
+- name: Get spark worker device name from AWS when instance store - non-NVMe
+  shell: "grep `echo {{ spark_worker_cache_dir }} | cut -d \"/\" -f2` /etc/fstab | cut -f 1"
+  register: spark_worker_device
+  when:
+    - is_aws_instance
+    - inventory_hostname in groups['spark-worker']
+  tags:
+    - iops_test
+
+
+- debug: msg="Spark Worker Device Name -- {{ spark_worker_device }}  --{{ spark_worker_device.stdout.split()[0].split(' ')[0] }}"
+  when:
+  - is_aws_instance
+  - inventory_hostname in groups['spark-worker']
+  - spark_worker_device.stdout != ""
+  tags:
+  - iops_test
+
+- name: Set variable spark_worker_device_name
+  set_fact:
+    spark_worker_device_name: "{{ spark_worker_device.stdout.split()[0].split(' ')[0] }}"
+  when:
+  - is_aws_instance
+  - inventory_hostname in groups['spark-worker']
+  #    - spark_worker_device.status == 200
+  - spark_worker_device.stdout != ""
+  - spark_worker_device.stdout.split()[0].split(' ')[0] != ""
+  tags:
+  - iops_test
+
+
+- name: Install nvme-cli if spark_worker_device is not found from the above url
+  yum: 
+    name: nvme-cli
+    state: present
+  when: 
+    - is_aws_instance
+    - inventory_hostname in groups['spark-worker']
+    - spark_worker_device.stdout.split(' ')[0] == ""
+
+- name: Install jq if spark_worker_device is not found from the above url
+  yum: 
+    name: jq
+    state: present
+  when: 
+    - is_aws_instance
+    - inventory_hostname in groups['spark-worker']
+    - spark_worker_device.stdout.split(' ')[0] == ""
+
+- name: Get First NVMe device name from nvme-cli
+  shell: "nvme list -o json | jq ['.Devices[] | select (.ModelNumber == \"Amazon EC2 NVMe Instance Storage\") | .DevicePath'][0] | tr -d '\"'"
+  register: spark_worker_device_nvme
+  when: 
+    - is_aws_instance
+    - inventory_hostname in groups['spark-worker']
+    - spark_worker_device.stdout.split(' ')[0] == ""
+
+- debug: msg="Spark Worker Device Name - {{ spark_worker_device_nvme }}"
+  when: 
+    - is_aws_instance
+    - inventory_hostname in groups['spark-worker']
+
+- name: Set variable spark_worker_device_name_nvme
+  set_fact:
+     spark_worker_device_name: "{{ spark_worker_device_nvme.stdout }}"
+  when: 
+    - is_aws_instance
+    - inventory_hostname in groups['spark-worker']
+    - spark_worker_device.stdout is defined
+    - spark_worker_device.stdout.split(' ')[0] == ""
+
+- name: Fail if AWS EC2 Instance Type is found but Instance Store Device is not found 
+  fail:
+    msg: "AWS EC2 Instance Type is found -- '{{ ec2_instance_type.content }}' but Instance Store Device is not found "
+  when: 
+    - is_aws_instance
+    - inventory_hostname in groups['spark-worker']
+    - ec2_instance_type is defined
+    - ec2_instance_type.content != ""
+    - spark_worker_device_name is not defined
+
+#- name: Set Mongo values in Amazon
+#  set_fact:
+#    mongo_os: "amzn1"
+#    mongo_repo_base_url: "https://repo.mongodb.org/yum/amazon/2013.03/mongodb-org/{{ mongo_version | regex_replace('^([0-9])\\.([0-9]*).*', '\\1.\\2') }}/x86_64/RPMS"
+#  when:
+#    - is_aws_instance
+#    - ansible_distribution == "Amazon"
+
+#- name: Set Mongo values in CentOS/Redhat 7
+#  set_fact:
+#    mongo_os: "el7"
+#    mongo_repo_base_url: "https://repo.mongodb.org/yum/redhat/7/mongodb-org/{{ mongo_version | regex_replace('^([0-9])\\.([0-9]*).*', '\\1.\\2') }}/x86_64/RPMS"
+##  when: ansible_distribution != "Amazon"
+#  tags:
+#    - check_connector_zip
+
+- name: Add IP address of all hosts to all hosts
+  lineinfile:
+    dest: /etc/hosts
+    regexp: '.*{{ item }}$'
+    line: "{{ hostvars[item].private_ip }} {{item}}"
+    state: present
+  when:
+    - hostvars[item].ansible_host is defined
+    - hostvars[item].private_ip is defined
+    - use_etc__hosts
+  with_items: "{{ groups.all }}"
+  tags:
+    - test_etc_hosts
+
+
+
+- name: Set Spark/Hadoop Environment Variables
+  set_fact:
+    spark_version: "{{ spark_version }}"
+    spark_filename: "{{ spark_filename }}"
+    hadoop_version: "{{ hadoop_version }}"
+#    spark_tgz_url: "{{ spark_tgz_url }}"
+#    spark_tgz_sha512_url: "{{ spark_tgz_sha512_url }}"
+    spark_tgz_sha512_local: "{{ spark_tgz_sha512_local }}"
+    spark_tgz_local: "{{ spark_tgz_local }}"
+    spark_dir: "{{ spark_dir }}"
+    old_spark_dir: "{{ old_spark_dir }}"
+    spark_worker_dir: "{{ spark_worker_dir }}"
+    spark_log_dir: "{{ spark_log_dir }}"
+    spark_local_dirs: "{{ spark_local_dirs }}"
+    spark_pid_dir: "{{ spark_pid_dir }}"
+    minimum_spark_memory_per_spark_core_mb: "{{ minimum_spark_memory_per_spark_core_mb }}"
+    hadoop_conf_dir: "{{ hadoop_conf_dir }}"
+    use_existing_spark_on_yarn: "{{ use_existing_spark_on_yarn }}"
+    gateway_download_path: "{{ gateway_download_path }}"
+    spark_download_path: "{{ spark_download_path }}"
+
+  when: (groups['gateway'] is defined and inventory_hostname in groups['gateway']) or (inventory_hostname in groups['pipeline']) or (inventory_hostname in groups['spark-worker']) or (groups['spark-master'] is defined and inventory_hostname in groups['spark-master'])
+  tags:
+    - start-app-spark
+    - stop-app-spark
+    - iops_test
+
+
+- name: Set Spark Worker Cache directory
+  set_fact:
+    spark_worker_cache_dir: "{{ spark_worker_cache_dir }}"
+  when: (groups['gateway'] is defined and inventory_hostname in groups['gateway']) or (inventory_hostname in groups['pipeline']) or (inventory_hostname in groups['spark-worker']) or (groups['spark-master'] is defined and inventory_hostname in groups['spark-master'])
+  tags:
+    - iops_test
+
+- name: Set Most Configured Values
+  set_fact:
+    jetty_https_port: "{{ jetty_https_port }}"
+    jetty_http_port: "{{ jetty_http_port }}"
+    library_root_dir: "{{ library_root_dir }}"
+    library_storage: "{{ library_storage }}"
+    library_distribution: "{{ library_distribution }}"
+    library_user: "{{ library_user }}"
+    library_resource_path: "{{ library_resource_path }}"
+    library_storage_keytab: "{{ library_storage_keytab }}"
+    library_storage_realm: "{{ library_storage_realm }}"
+    library_storage_krb5: "{{ library_storage_krb5 }}"
+    rest_user: "{{ rest_user }}"
+    rest_password: "{{ rest_password }}"
+    s3_authentication: "{{ s3_authentication }}"
+    s3_bucket_name: "{{ s3_bucket_name }}"
+    s3_access_key: "{{ s3_access_key }}"
+    s3_secret_key: "{{ s3_secret_key }}"
+    s3_enable_serverside_encryption: "{{ s3_enable_serverside_encryption }}"
+    mongo_version: "{{ mongo_version }}"
+    mongodb_name: "{{ mongodb_name }}"
+    mongodb_dbPath: "{{ mongodb_dbPath }}"
+    mongodump_local_dir: "{{ mongodump_local_dir }}"
+    mongodump_remote_dir: "{{ mongodump_remote_dir }}"
+    worker_instance_count: "{{ worker_instance_count }}"
+    library_temp_path: "{{ library_temp_path }}"
+    s3_fast_upload: "{{ s3_fast_upload }}"
+    core_server_test_port: "{{ core_server_test_port }}"
+    pipeline_server_test_port: "{{ pipeline_server_test_port }}"
+    gateway_server_test_port: "{{ gateway_server_test_port }}"
+    worker_server_test_port: "{{ worker_server_test_port }}"
+    pax_server_jks_file: "{{ pax_server_jks_file }}"
+    pax_server_jks_alias: "{{ pax_server_jks_alias }}"
+    pax_server_jks_password: "{{ pax_server_jks_password }}"
+
+    server_download_path: "{{ server_download_path }}"
+    pipeline_download_path: "{{ pipeline_download_path }}"
+
+    mongo_download_path: "{{ mongo_download_path }}"
+    conector_download_path: "{{ conector_download_path }}"
+    jdk_download_path: "{{ jdk_download_path }}"
+
+    redshift_driver_path: "{{ redshift_driver_path }}"
+    jdbc_driver_path: "{{ jdbc_driver_path }}"
+
+  tags:
+    - check_connector_zip
+    - mongodump_upload
+
+- name: Set Library Path
+  set_fact:
+     library_root_dir: "/{{ library_root_dir }}"
+  when: 
+    - library_storage == "simple"
+    - library_distribution == "aws" or library_distribution == "hdi3"
+
+- name: Create pes keyseed for Core Servers
+  set_fact:
+    pax_keyseed: "{{ lookup('password', '/tmp/paxta_keyseed.txt length=44 chars=ascii_letters') }}"
+
+- name: Stop paxata-server service so no one accesses Paxata during down time
+  shell: "service paxata-server stop || :"
+  # using shell as a workaround since the test rpms dont work with service module
+  args:
+    warn: false # set warn=false to prevent warning
+  ignore_errors: yes
+  when: 
+    - inventory_hostname in groups['core-server']
+
+
+
+
+- name: Disable SELinux.
+  selinux:
+    state: disabled
+  ignore_errors: yes
+  when: inventory_hostname in groups['mongodb']
+
+- name: Stop and disable firewalld.
+  shell: "service firewalld stop || :"
+  args:
+    warn: false # set warn=false to prevent warning
+  ignore_errors: yes
+
+- name: Create {{ library_temp_path }}
+  file:
+    path: "{{ library_temp_path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: 0777 
+  when: 
+    - library_storage == 'simple'
+    - library_distribution == 'aws' or library_distribution == 'hdi3'
+    - (inventory_hostname in groups['pipeline']) or (inventory_hostname in groups['core-server'])
+
+- name: Create {{ library_resource_path }}
+  file:
+    path: "{{ library_resource_path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: 0777 
+  when: 
+    - library_storage == 'simple'
+    - library_distribution == 'aws' or library_distribution == 'hdi3'
+    - (inventory_hostname in groups['pipeline']) or (inventory_hostname in groups['core-server'])
+
+- name: Configure core-site.xml (S3 Bucket with IAM Role Authentication)
+  template:
+    src: "core-site.iam.xml.j2"
+    dest: "{{ library_resource_path }}/core-site.xml"
+    owner: root
+    group: root
+    mode: 0644
+  when: 
+    - library_storage == 'simple'
+    - library_distribution == 'aws'
+    - s3_authentication == 'iam'
+    - (inventory_hostname in groups['pipeline']) or (inventory_hostname in groups['core-server'])
+
+- name: Configure core-site.xml (S3 Bucket with KeyPair Authentication)
+  template:
+    src: "core-site.keypair.xml.j2"
+    dest: "{{ library_resource_path }}/core-site.xml"
+    owner: root
+    group: root
+    mode: 0644
+  when: 
+    - s3_authentication == 'keypair'
+    - library_storage == 'simple'
+    - library_distribution == 'aws'
+    - (inventory_hostname in groups['pipeline']) or (inventory_hostname in groups['core-server'])
+
+- name: Configure core-site.xml (Azure Blob Storage with Account Key)
+  template:
+    src: "core-site.wasb.xml.j2"
+    dest: "{{ library_resource_path }}/core-site.xml"
+    owner: root
+    group: root
+    mode: 0644
+  when: 
+    - library_storage == 'simple'
+    - library_distribution == 'hdi3'
+    - (inventory_hostname in groups['pipeline']) or (inventory_hostname in groups['core-server'])
+
+- name: Install iperf3
+  yum:
+    name: iperf3
+    state: present
+  tags:
+    - iperf3_test
+
+##### Stop iperf3
+- name: Stop iperf3 service
+  shell: "pkill -9 iperf3 || :"
+  register: command_result
+  ignore_errors: true
+  when: (groups['spark-worker'] is defined and inventory_hostname == groups['spark-worker'][0]) or (groups['gateway'] is defined and inventory_hostname == groups['gateway'][0]) or (groups['core-server'] is defined and inventory_hostname == groups['core-server'][0]) or (groups['pipeline'] is defined and inventory_hostname == groups['pipeline'][0])
+
+
+##### Startng iperf3 servers #####
+- name: Start iperf3 server on {{ groups['spark-worker'][0] }} port {{ worker_server_test_port }}
+  shell: "iperf3 -s -p {{ worker_server_test_port }} -D"
+  tags:
+    - iperf3_test
+  when: groups['spark-worker'] is defined and inventory_hostname == groups['spark-worker'][0]
+
+- name: Start iperf3 server on {{ groups['gateway'][0] }} port {{ gateway_server_test_port }}
+  shell: "iperf3 -s -p {{ gateway_server_test_port }} -D"
+  tags:
+    - iperf3_test
+  when: groups['gateway'] is defined and inventory_hostname == groups['gateway'][0]
+
+- name: Start iperf3 server on {{ groups['core-server'][0] }} port {{ core_server_test_port }}
+  shell: "iperf3 -s -p {{ core_server_test_port }} -D"
+  tags:
+    - iperf3_test
+  when: groups['core-server'] is defined and inventory_hostname == groups['core-server'][0]
+
+- name: Start iperf3 server on {{ groups['pipeline'][0] }} port {{ pipeline_server_test_port }}
+  shell: "iperf3 -s -p {{ pipeline_server_test_port }} -D"
+  tags:
+    - iperf3_test
+  when: groups['pipeline'] is defined and inventory_hostname == groups['pipeline'][0]
+##### END Startng iperf3 servers #####
+
+##### Calling Spark Worker from another Worker, Core Server and Pipeline #####
+- name: Wait for {{ groups['spark-worker'][0] }} on port {{ worker_server_test_port }}
+  wait_for: 
+    host: "{{ groups['spark-worker'][0] }}"
+    port: "{{ worker_server_test_port }}"
+    timeout: 3
+  tags:
+    - iperf3_test
+  when: (groups['spark-worker'] is defined and inventory_hostname == groups['spark-worker'][1]) or (groups['core-server'] is defined and inventory_hostname == groups['core-server'][0]) or (groups['pipeline'] is defined and inventory_hostname == groups['pipeline'][0])
+
+##### Calling Core Server from Spark Worker, Pipeline, and Gateway #####
+- name: Wait for {{ groups['core-server'][0] }} on port {{ core_server_test_port }}
+  wait_for:
+    host: "{{ groups['core-server'][0] }}"
+    port: "{{ core_server_test_port }}"
+    timeout: 3
+  tags:
+    - iperf3_test
+  when: (groups['spark-worker'] is defined and inventory_hostname == groups['spark-worker'][1]) or (groups['gateway'] is defined and inventory_hostname == groups['gateway'][0]) or (groups['pipeline'] is defined and inventory_hostname == groups['pipeline'][0])
+
+##### Calling Pipeline Server from Core Server and Spark Worker #####
+- name: Wait for {{ groups['pipeline'][0] }} on port {{ pipeline_server_test_port }} 
+  wait_for:
+    host: "{{ groups['pipeline'][0] }}"
+    port: "{{ pipeline_server_test_port }}"
+    timeout: 3
+  tags:
+    - iperf3_test
+  when: (groups['core-server'] is defined and inventory_hostname == groups['core-server'][0]) or (groups['spark-worker'] is defined and inventory_hostname == groups['spark-worker'][0]) 
+
+##### Calling Gateway Server from Core Server#####
+- name: Wait for {{ groups['gateway'][0] }} on port {{ gateway_server_test_port }}
+  wait_for:
+    host: "{{ groups['gateway'][0] }}"
+    port: "{{ gateway_server_test_port }}"
+    timeout: 3
+  tags:
+    - iperf3_test
+  when: groups['gateway'] is defined and groups['core-server'] is defined and inventory_hostname == groups['core-server'][0]
+
+
+- name: Test Network between core server and Spark Worker
+  shell: "iperf3 -c {{ groups['core-server'][0] }} -i 1 -t 5 -f m -p {{ core_server_test_port }} | grep -Po '[0-9.]*(?= Mbits/sec)' | tail -1"
+  register: network_speed
+  tags:
+    - iperf3_test
+  when: groups['spark-worker'] is defined and inventory_hostname == groups['spark-worker'][0]
+
+- name: Stop iperf3 service
+  shell: "pkill -9 iperf3 || :"
+  register: command_result
+  ignore_errors: true
+  tags:
+  - iperf3_test
+  when: (groups['spark-worker'] is defined and inventory_hostname == groups['spark-worker'][0]) or (groups['gateway'] is defined and inventory_hostname == groups['gateway'][0]) or (groups['core-server'] is defined and inventory_hostname == groups['core-server'][0]) or (groups['pipeline'] is defined and inventory_hostname == groups['pipeline'][0])
+
+
+- debug: msg="Network bandwidth from Spark Worker to Core server is {{ network_speed.stdout }}Mbits/second"
+  when: groups['spark-worker'] is defined and inventory_hostname == groups['spark-worker'][0]
+  tags:
+    - iperf3_test
+
+
+
+- name: Assert Network bandwidth between core server and Spark Worker is above 800Mbit/second
+  assert: 
+    that:
+      - "{{ network_speed.stdout }} != "" and {{ network_speed.stdout }} > 800"
+    msg: "network bandwith ({{ network_speed.stdout }}Mbits/second) is below 800Mbit/second"
+  tags:
+    - iperf3_test
+  when:  groups['spark-worker'] is defined and inventory_hostname == groups['spark-worker'][0]
+
+
+

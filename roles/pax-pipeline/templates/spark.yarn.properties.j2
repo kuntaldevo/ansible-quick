@@ -1,0 +1,20 @@
+##Valid config options are spark://master:port or yarn
+master.url=yarn
+spark.home={{ spark_dir }}
+
+##The config variables below are only required for Spark on YARN
+hadoop.conf={{ hadoop_conf_dir }}
+yarn.num.executors={{ worker_instance_count }}
+yarn.executor.cores={% if spark_worker_cores|int < 2 %}1{% else %}{{ spark_worker_cores|int - 1 }}{% endif %}
+
+# JVM/GC options for spark executors in standalone mode
+spark-standalone.extra.args=-XX:-OmitStackTraceInFastThrow -XX:MetaspaceSize=256m -XX:MaxMetaspaceSize=512m -Xloggc:{{ spark_dir }}/logs/gc.log -XX:+PrintGCDateStamps -XX:+PrintGCDetails -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=20 -XX:GCLogFileSize=48M -XX:+PrintTenuringDistribution -XX:+PrintGCApplicationConcurrentTime -XX:+PrintGCApplicationStoppedTime -XX:+PrintAdaptiveSizePolicy -XX:+PrintHeapAtGC -XX:+PrintGCCause -XX:+PrintReferenceGC -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={{ spark_dir }}/logs/heapdump.hprof -XX:+PrintSafepointStatistics -XX:PrintSafepointStatisticsCount=1
+
+# JVM/GC options for spark executors in Yarn-managed cluster
+spark-submit.extra.args=--conf "-XX:-OmitStackTraceInFastThrow -XX:MetaspaceSize=256m -XX:MaxMetaspaceSize=512m -Xloggc:{{ spark_dir }}/logs/gc.log -XX:+PrintGCDateStamps -XX:+PrintGCDetails -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=20 -XX:GCLogFileSize=48M -XX:+PrintTenuringDistribution -XX:+PrintGCApplicationConcurrentTime -XX:+PrintGCApplicationStoppedTime -XX:+PrintAdaptiveSizePolicy -XX:+PrintHeapAtGC -XX:+PrintGCCause -XX:+PrintReferenceGC -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={{ spark_dir }}/logs/heapdump.hprof  -XX:+PrintSafepointStatistics -XX:PrintSafepointStatisticsCount=1"
+
+# If left empty, used jars from Spark home
+spark.yarn.jar=
+spark.yarn.queue=default
+# additional arguments to pass to spark-submit; for example, for security options see http://spark.apache.org/docs/latest/security.html
+#spark-submit.extra.args=--conf spark.hadoop.fs.hdfs.impl.disable.cache=true --conf spark.sql.warehouse.dir={{ spark_yarn_nm_host_port.stdout }}/user/spark/warehouse --conf spark.history.fs.logDirectory={{ spark_yarn_nm_host_port.stdout }}/var/log/spark/apps --conf=spark.eventLog.dir={{ spark_yarn_nm_host_port.stdout }}/var/log/spark/apps

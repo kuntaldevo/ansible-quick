@@ -1,0 +1,222 @@
+---
+- name: Set Spark Master Environment Variable
+  set_fact:
+    spark_worker_memory: "{{ spark_worker_memory }}"
+    spark_worker_cores: "{{ spark_worker_cores }}"
+  when:
+    - not use_existing_spark_on_yarn
+
+- name: Set Spark Master User Group for Standalone Apache Spark
+  set_fact:
+    spark_user: root
+    spark_group: root
+  when:
+    - not use_existing_spark_on_yarn
+
+- name: Copy Spark TGZ sha512 file from ansible controller
+  copy:
+    src: "{{ spark_download_path }}/{{spark_filename }}.tgz.sha512"
+    dest: "{{ spark_tgz_sha512_local }}"
+  when:
+    - not use_existing_spark_on_yarn
+
+- name: Register sha512 to a variable
+  shell: "cat {{ spark_tgz_sha512_local }}"
+  register: spark_tgz_sha512
+  when:
+    - not use_existing_spark_on_yarn
+
+- debug:
+    msg: "spark_tgz_sha512={{ spark_tgz_sha512.stdout | regex_replace( spark_filename + '.tgz: ', '') }}"
+  when:
+    - not use_existing_spark_on_yarn
+
+- name: Copy Spark TGZ  file from ansible controller
+  copy:
+    src: "{{ spark_download_path }}/{{spark_filename }}.tgz"
+    dest: "{{ spark_tgz_local }}"
+    #    checksum: "sha512:{{ spark_tgz_sha512.stdout | regex_replace( spark_filename + '.tgz: ', '') }}"
+    owner: "{{ spark_user }}"
+    group: "{{ spark_group }}"
+    mode: 0755
+  when:
+    - not use_existing_spark_on_yarn
+
+
+- name: Does spark-core*{{ spark_version }}* jar exist already
+  find:
+    paths: "{{ spark_dir }}/jars/"
+    patterns: "spark-core*{{ spark_version }}*"
+  register: spark_version_matched
+  when:
+    - not use_existing_spark_on_yarn
+
+- debug: msg="Match found? {{ spark_version_matched.matched }}"
+  when:
+    - not use_existing_spark_on_yarn
+
+- name: Does hadoop-common-{{ hadoop_version }} jar exist already
+  find:
+    paths: "{{ spark_dir }}/jars/"
+    patterns: "hadoop-common-{{ hadoop_version }}*"
+  register: hadoop_version_matched
+  when:
+    - not use_existing_spark_on_yarn
+
+- name: stop Legacy spark-master
+  shell: "sh {{ old_spark_dir }}/sbin/stop-master.sh || :"
+  ignore_errors: yes
+  args:
+    warn: false # set warn=false to prevent warning
+  when:
+    - not use_existing_spark_on_yarn
+
+- name : Stop spark-master
+  shell: "{{ spark_dir }}/sbin/stop-master.sh || :"
+  ignore_errors: yes
+  args:
+    warn: false # set warn=false to prevent warning
+  when:
+    - not use_existing_spark_on_yarn
+
+- name: Kill any remaining Master process
+  shell: "kill -9 $(jps | grep Master | cut -d' ' -f1) || :"
+  ignore_errors: yes
+  when:
+    - not use_existing_spark_on_yarn
+
+- name: Delete Legacy spark directory
+  file:
+    path: "{{ old_spark_dir }}/"
+    state: absent
+  ignore_errors: yes
+  when:
+    - not use_existing_spark_on_yarn
+
+- name: Delete Spark Directory when existing hadoop version or spark version don't match with the spark tgz
+  file:
+    path: "{{ item }}"
+    state: absent
+  with_items: 
+    - "{{ spark_dir }}/"
+    - "{{ spark_worker_dir }}/"
+    - "{{ spark_log_dir }}/"
+    - "{{ spark_local_dirs }}/"
+    - "{{ spark_pid_dir }}/"
+    - "{{ spark_worker_cache_dir }}/"
+  when: not use_existing_spark_on_yarn and (hadoop_version_matched.matched == 0 or spark_version_matched.matched == 0)
+
+
+- name: Create Spark Directory.
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ spark_user }}"
+    group: "{{ spark_group }}"
+    mode: 0755
+  with_items: 
+    - "{{ spark_dir }}/"
+    - "{{ spark_worker_dir }}/"
+    - "{{ spark_log_dir }}/"
+    - "{{ spark_local_dirs }}/"
+    - "{{ spark_pid_dir }}/"
+    - "{{ spark_worker_cache_dir }}/"
+  when: not use_existing_spark_on_yarn and (hadoop_version_matched.matched == 0 or spark_version_matched.matched == 0)
+    
+- name: Unzip Spark TGZ Pakcage
+  unarchive:
+    remote_src: yes
+    src: "{{ spark_tgz_local }}"
+    dest: "{{ spark_dir }}/"
+  when: not use_existing_spark_on_yarn and (hadoop_version_matched.matched == 0 or spark_version_matched.matched == 0)
+
+- name: Move directory when it's new installaiton or upgrade
+  shell: "mv {{ spark_dir }}/{{ spark_filename }}/* {{ spark_dir }}/; rmdir {{ spark_dir }}/{{ spark_filename }}"
+  when: not use_existing_spark_on_yarn and (hadoop_version_matched.matched == 0 or spark_version_matched.matched == 0)
+
+- name: Update /etc/security/limits.conf for soft nofile
+  lineinfile: dest=/etc/security/limits.conf 
+              line="{{ spark_user }} soft nofile 100000"
+  when: not use_existing_spark_on_yarn
+- name: Update /etc/security/limits.conf for hard nofile
+  lineinfile: dest=/etc/security/limits.conf 
+              line="{{ spark_user }} hard nofile 100000"
+  when: not use_existing_spark_on_yarn
+- name: Update /etc/security/limits.conf for soft noproc
+  lineinfile: dest=/etc/security/limits.conf 
+              line="{{ spark_user }} soft noproc 5000"
+  when: not use_existing_spark_on_yarn
+- name: Update /etc/security/limits.conf for hard noproc
+  lineinfile: dest=/etc/security/limits.conf 
+              line="{{ spark_user }} hard noproc 5000"
+  when: not use_existing_spark_on_yarn
+
+- name: Set spark-env.sh
+  template:
+    src: "spark-env.sh.j2"
+    dest: "{{ spark_dir }}/conf/spark-env.sh"
+    owner: "{{ spark_user }}"
+    group: "{{ spark_group }}"
+    mode: 0644
+  when:
+    - not use_existing_spark_on_yarn
+
+- name : start spark-master
+  command: "sh {{ spark_dir }}/sbin/start-master.sh"
+  register: start_result
+  when:
+    - not use_existing_spark_on_yarn
+- debug: msg={{ start_result.stdout }}
+  when:
+    - not use_existing_spark_on_yarn
+- name: Wait until Spark Master Port is available
+  wait_for: 
+    host: "{{ groups['spark-master'][0] }}"
+    port: 7077
+    delay: 2
+  when:
+    - not use_existing_spark_on_yarn
+
+
+
+- name : start spark-master
+  command: "sh {{ spark_dir }}/sbin/start-master.sh"
+  register: start_result
+  when:
+    - not use_existing_spark_on_yarn
+  tags:
+      - start-app-spark
+      - never
+
+- debug: msg={{ start_result.stdout }}
+  when:
+    - not use_existing_spark_on_yarn
+  tags:
+    - start-app-spark
+    - never
+
+- name: Wait until Spark Master Port is available
+  wait_for:
+    host: "{{ groups['spark-master'][0] }}"
+    port: 7077
+    delay: 2
+  when:
+    - not use_existing_spark_on_yarn
+  tags:
+    - start-app-spark
+    - never
+
+
+
+- name : Stop spark-master
+  command: "sh {{ spark_dir }}/sbin/stop-master.sh"
+  register: stop_result
+  tags:
+    - stop-app-spark
+    - never
+
+- debug: msg={{ stop_result.stdout }}
+  tags:
+    - stop-app-spark
+    - never
+

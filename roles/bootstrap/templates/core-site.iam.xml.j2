@@ -1,0 +1,50 @@
+<configuration>
+   <property>
+    <name>fs.defaultFS</name>
+    <value>s3a://{{ s3_bucket_name }}</value>
+  </property>
+  <property>
+    <name>fs.s3a.fast.upload</name>
+    <value>{{ s3_fast_upload }}</value>
+  </property>
+  <property>c
+    <name>fs.s3a.multipart.size</name>
+    <value>104857600</value>
+    <description>Must be set to overwrite default 100M in hadoop aws which is not a number</description>
+  </property>
+  <property>
+    <name>fs.s3a.aws.credentials.provider</name>
+    <value>org.apache.hadoop.fs.s3a.SharedInstanceProfileCredentialsProvider,com.amazonaws.auth.DefaultAWSCredentialsProviderChain</value>
+    </property>
+  <property>
+   <name>hadoop.security.authentication</name>
+   <value>simple</value>
+  </property>
+  <property>
+    <name>fs.s3a.buffer.dir</name>
+    <value>{{ library_temp_path }}</value>
+    <description>Comma separated list of directories that will be used to buffer file uploads to. No effect if fs.s3a.fast.upload is true.</description>
+  </property>
+  <property>
+    <name>fs.s3a.impl</name>
+    <value>org.apache.hadoop.fs.s3a.S3AFileSystem</value>
+    <description>The implementation class of the S3A Filesystem</description>
+  </property>
+  <property>
+    <name>fs.s3.enableServerSideEncryption</name>
+    <value>{{ s3_enable_serverside_encryption }}</value>
+  </property>
+  <property>
+    <name>fs.s3a.server-side-encryption-algorithm</name>
+    <description>Specify a server-side encryption algorithm for s3a: file system. Unset by default, and the only other currently allowable value is AES256.</description>
+    <value>AES256</value>
+  </property>
+  <property>
+    <name>fs.s3a.threads.max</name>
+    <value>20</value>
+  </property>
+  <property>
+    <name>fs.s3a.connection.maximum</name>
+    <value>30</value>
+  </property>
+</configuration>

@@ -1,0 +1,109 @@
+######
+# most configured values
+######
+force_remove_previousjdk: false  # Make it true to install latest open jdk java 1.8, keep it flase for spark on yarn.
+
+jetty_https_port: 8443 # Paxata UI https port. Possible values: [443-65535]; if set to less than 1024, Tableau connector cannot be used due to Tableau sdk restriction
+jetty_http_port: 8080 # Paxata UI https port. Possible values: [80-65535]; if set to less than 1024, Tableau connector cannot be used due to Tableau sdk restriction
+
+
+
+library_root_dir: test-2018-sp6 # Path as data library storage
+library_distribution: aws # Possible values: [aws,hdi3,cdh5,hdp2]. To use s3 bucket, use "aws". To use wasb storage, use "hdi3". This field is ignored if library_storage is local.
+
+s3_authentication: iam # Authentication method to s3. Possible values: [keypair,iam]. This field is ignored if library_storage is local.
+s3_bucket_name: paxata-apatil # Change to actual s3 bucket name. This field is ignored if library_storage is local.
+s3_access_key:  # Change to actual s3 access key. This field is ignored if library_storage is local or if s3_authentication is iam.
+s3_secret_key:  # Change to actual s3 secret key. This field is ignored if library_storage is local or if s3_authentication is iam.
+s3_enable_serverside_encryption: false # Whether your s3 bucket has server-side encryption on. This field is ignored if library_storage is local.
+
+azure_blob_account_full_name: XXXX # Change to actual blob account full name example accountname.blob.windows.net . This field is ignored if library_storage is local.
+azure_blob_container_name: YYYY
+azure_blob_account_key: ZZZZ # Change to Azure Account Key.
+azure_wasb_protocol: wasbs
+
+use_etc__hosts: true # Whether/etc/hosts would be used to resolve inventory hostnames to IP addresses; if false, DNS havs to resolve inventory hostnames externally. For example, if use_etc__hosts: false, then replace "pm" with actual host name of the pipeline server, replace "core" with actual host name of core server, etc... in the inventory file.
+
+
+spark_worker_cache_dir: /mnt/resource/paxatacache # Pipeline Worker Cache Dir.  This if on ephemeral storage , ansible should have root permissions to fix the storage mount and this should be SSD storage.
+
+
+local_download_path: ~/paxata-installation-files-2019.1 # folder that should contain all the software that we will be installing, Open JDK, Mongo, Paxata Server, Paxata Pipeline , Spark tgz files.
+
+local_jks_file: "{{ local_download_path }}/jks/paxata.jks"
+pax_server_jks_file: /usr/local/paxata/server/paxata.jks
+# This default file if you have your own JKS file then add the complete path along with filename. This file should have read access for paxata service user.
+pax_server_jks_alias: paxata
+# This is default alias, if your above jks file has some other alias, enter it here.
+pax_server_jks_password: paxata
+# This is password for jks store, if you have your custom file already, then you can scramble the password using documented methods and enter it, but if the JKS file does not exists then use paxata as password.
+
+
+# SSO Keystore JKS file , alias and password
+pax_sso_jks_file: /usr/local/paxata/server/paxata.jks
+pax_sso_jks_alias: paxata
+pax_sso_jks_pwd: paxata
+
+
+remote_install_location: /tmp
+
+upgrade_backup_path: /tmp/backup
+
+connector_names:
+  - "connector-hdp2-{{ connector_version }}-hdfs.zip"
+  - "connector-hdp2-{{ connector_version }}-hive.zip"
+  - "connector-cdh5-{{ connector_version }}-hdfs.zip"
+  - "connector-cdh5-{{ connector_version }}-hive.zip"
+  - "connector-adls-{{ connector_version }}.zip"
+  - "connector-dynamodb-{{ connector_version }}.zip"
+  - "connector-mstr-{{ connector_version }}.zip"
+  - "connector-redshift-{{ connector_version }}.zip"
+  - "connector-s3-hdfs-{{ connector_version }}.zip"
+  - "connector-salesforce-rest-{{ connector_version }}.zip"
+  - "connector-sharepoint-{{ connector_version }}.zip"
+  - "connector-smb-{{ connector_version }}.zip"
+  - "connector-tableau-{{ connector_version }}.zip"
+  - "connector-wasb-{{ connector_version }}.zip"
+  - "connector-snowflake-{{ connector_version }}.zip"
+  - "connector-dynamics-365-{{ connector_version }}.zip"
+  - "connector-ftp-{{ connector_version }}.zip"
+  - "connector-jdbc-{{ connector_version }}.zip"
+  - "connector-azure-sql-dw-{{ connector_version }}.zip"
+  - "connector-gcs-{{ connector_version }}.zip"
+  - "connector-rest-api-{{ connector_version }}.zip"
+
+redshift_driver_jar: "RedshiftJDBC41-1.2.10.1009.jar"
+redshift_url: "https://s3.amazonaws.com/redshift-downloads/drivers/{{ redshift_driver_jar }}"
+
+jdbc_driver_jars:
+  - "https://repo1.maven.org/maven2/net/sourceforge/jtds/jtds/1.3.1/jtds-1.3.1.jar"
+  - "https://repo1.maven.org/maven2/mysql/mysql-connector-java/5.1.39/mysql-connector-java-5.1.39.jar"
+  - "https://repo1.maven.org/maven2/org/postgresql/postgresql/9.4.1208/postgresql-9.4.1208.jar"
+
+
+mongodb_dbPath: /usr/local/paxata/mongo # Path to store Mongo Metadata. This has to be on persistent storage.
+mongodump_local_dir: "/usr/local/paxata/mongo_backups" # Local path on the last mongo server to store 7 daily mongodumps.
+install_mongo: true
+
+spark_dir: /usr/lib/spark # For standalone spark, Ansible will create this directory. For spark on yarn, this directory must contain bin/spark-submit.
+
+###Local Repository URL###
+###paxata_repo_base_url: http://core:8414/pax/efs/flash/GA/{{ paxata_version }}
+###spark_repo_base_url: http://core:8414/pax/efs/flash/GA/{{ paxata_version }}/ansible
+###mongo_repo_base_url_offline: http://core:8414/pax/efs/flash/GA/{{ paxata_version }}/ansible
+
+###Remote Repository URL###
+paxata_repo_base_url: https://flash.paxata.com/GA/{{ paxata_version }}
+spark_repo_base_url: https://archive.apache.org/dist/spark/spark-{{ spark_version }}
+
+server_download_path: "{{ local_download_path }}/server"
+pipeline_download_path: "{{ local_download_path }}/pipeline"
+gateway_download_path: "{{ local_download_path }}/gateway"
+mongo_download_path: "{{ local_download_path }}/mongo"
+conector_download_path: "{{ local_download_path }}/connector"
+jdk_download_path: "{{ local_download_path }}/jdk"
+spark_download_path: "{{ local_download_path }}/spark"
+redshift_driver_path: "{{ local_download_path }}/redshift"
+jdbc_driver_path: "{{ local_download_path }}/jdbc"
+
+

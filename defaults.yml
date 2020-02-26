@@ -1,0 +1,87 @@
+######
+# paxata software version information
+######
+#paxata_version: 2018.2_SP5
+paxata_version: 2019.1
+spark_version: 2.4.0
+hadoop_version: 2.7
+mongo_version: 3.6.12
+pipeline_spark_distro: db2.4.0
+gateway_spark_distro: emr516
+
+######
+# other configurable values
+######
+library_storage: simple # Possible values: [simple];  To use s3 bucket or wasb , use "simple".
+library_user: hdfs # User who writes to the library_root_dir. This field is ignored if library_storage is not local.
+library_resource_path: /etc/hadoop/conf # Path to xml file(s) that specifies remote cluster information. Used for data library config, gateway for batch job and pipeline for direct data load hadoop config. This field is ignored if library_storage is local.
+library_storage_keytab: /usr/local/paxata/paxatadatalib.keytab # This field is ignored if library_storage is not keytab
+library_storage_realm: REALM.COM # This field is ignored if library_storage is not keytab
+library_storage_krb5: /etc/krb5.conf # This field is ignored if library_storage is not keytab
+
+connector_bootstrap_dir: /usr/local/paxata/server/connectors/bootstrap
+redshift_driver_dir: /usr/local/paxata/server/redshift-drivers
+
+
+minimum_spark_memory_per_spark_core_mb: 4375 # 4375MB heap space per core
+hadoop_conf_dir: /etc/hadoop/conf # For standalone spark, this is ignored. For spark on yarn, this directory must contain core-site.xml, hdfs-site.xml and yarn-site.xml which are copied from YARN Resource Manager.
+
+free_disk_capacity_limit: 10000 # If free disk capacity below this thresold (in MB) the playbook would fail
+
+mongodb_name: paxata # mongodb name used by Paxata Core Server and database that stores mongo admin user credential
+mongodump_remote_dir: mongobackups # S3 object prefex/subdirectory to store mongodump tgz. Ignored if library_storage is not s3. Reference: https://aws.amazon.com/getting-started/tutorials/backup-to-s3-cli/
+
+rest_user: superuser # Rest API superuser username used for setting guardrail limits. If you try to restore existing paxata database, use the actual username instead. Leave this empty if rest token is specified in rest_password field below.
+rest_password: superuser # Rest API superuser password. For new installation, default for superuser is superuser. If you try to restore metadata for old installation, use the actual password or Rest token instead.
+
+core_server_test_port: 9080
+pipeline_server_test_port: 8090
+gateway_server_test_port: 8071
+worker_server_test_port: 35999
+
+
+
+######
+# s3-related configuration
+######
+library_temp_path: /tmp
+s3_fast_upload: true
+
+######
+# pipeline and spark information
+######
+
+coreserver_rpm_local: "{{ remote_install_location }}/paxata-server-{{ paxata_version }}.rpm"
+
+pipeline_rpm_local: "{{ remote_install_location }}/paxata-pipeline-{{ pipeline_spark_distro }}-{{ pipeline_version }}.rpm"
+pipeline_rpm_md5_local: "{{ remote_install_location }}/paxata-pipeline-{{ pipeline_spark_distro }}-{{ pipeline_version }}.rpm.md5"
+
+jdk_rpm_remote: "{{ remote_install_location }}"
+
+gateway_rpm_local: "{{ remote_install_location }}/paxata-gateway-{{ gateway_spark_distro }}-{{ pipeline_version }}.rpm"
+gateway_rpm_md5_local: "{{ remote_install_location }}/paxata-gateway-{{ gateway_spark_distro }}-{{ pipeline_version }}.rpm.md5"
+
+spark_tgz_local: "{{ remote_install_location }}/{{ spark_filename }}.tgz"
+spark_tgz_sha512_local: "{{ remote_install_location }}/{{ spark_filename }}.tgz.sha512"
+
+old_spark_dir: "/usr/local/paxata/old-spark-bin-hadoop2.6"
+worker_instance_count: "{{ groups['spark-worker'] | length }}"
+spark_worker_dir: "{{ spark_dir }}/worker"
+spark_log_dir: "{{ spark_dir }}/log"
+spark_local_dirs: "{{ spark_dir }}/local"
+spark_pid_dir: "{{ spark_dir }}/pid"
+spark_filename: "spark-{{ spark_version }}-bin-hadoop{{ hadoop_version }}"
+
+mongodb_packages:
+  - "mongodb-org-{{ mongo_version }}-1.el7.x86_64.rpm"
+  - "mongodb-org-mongos-{{ mongo_version }}-1.el7.x86_64.rpm"
+  - "mongodb-org-server-{{ mongo_version }}-1.el7.x86_64.rpm"
+  - "mongodb-org-shell-{{ mongo_version }}-1.el7.x86_64.rpm"
+  - "mongodb-org-tools-{{ mongo_version }}-1.el7.x86_64.rpm"
+
+#Open JDK 1.8.0 build 212
+jdk_rpm_name: java-1.8.0-openjdk-1.8.0.222.b10-1.el7_7.x86_64.rpm
+jdk_rpm_url: "https://rpmfind.net/linux/centos/7.7.1908/updates/x86_64/Packages/{{ jdk_rpm_name }}"
+
+enable_direct_data_load: true
+setglobalguardrails: true

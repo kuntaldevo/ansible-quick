@@ -1,0 +1,8 @@
+.vagrant
+*.rpm
+*.retry
+vault*
+npm-debug.log
+playbook.retry
+prod-inventory
+prod-playbook.yaml

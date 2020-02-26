@@ -1,0 +1,204 @@
+---
+- name: Set Spark Worker Environment Variable
+  set_fact:
+    spark_worker_memory: "{{ spark_worker_memory }}"
+    spark_worker_cores: "{{ spark_worker_cores }}"
+    spark_worker_cache_capacity_mb: "{{ spark_worker_cache_capacity_mb }}"
+
+
+- name: Ensure dig (bind-utils) is installed
+  yum:
+    name: bind-utils
+    state: present
+- name: Extract pipeline service name
+  shell: "rpm -qa | grep paxata-pipeline | cut -d'-' -f3,4"
+  register: pipeline_platform
+  args:
+    warn: false # set warn=false to prevent warning
+
+- name: Setting expected pipeline version
+  set_fact:
+    pipeline_expected_version: "{{ pipeline_spark_distro ~ '-' ~ pipeline_version }}"
+
+- debug:
+    msg: "Existing pipeline platform = {{ pipeline_platform.stdout }} and expected version is  {{ pipeline_expected_version }}"
+
+- name: Fail if existing pipeline rpm is detected but does not match with expected version and its not an upgrade
+  fail:
+    msg: "Existing Paxata Pipeline RPM , found but it does not match with expected version and its not an upgrade"
+  when:
+    - not upgrade_flag and pipeline_platform is defined and pipeline_platform.stdout | length > 0 and ( pipeline_platform.stdout != pipeline_expected_version)
+
+- debug:
+    msg: "Back up folder will be /usr/local/paxata/{{ pipeline_platform.stdout }}/"
+  when:  upgrade_flag and pipeline_platform.stdout | length > 0 and pipeline_platform.stdout != pipeline_expected_version
+
+
+# Take backup of existing pipeline folder before removing the rpm.
+- name: "Create Back up folder for upgrade "
+  file:
+    path: "/usr/local/paxata/{{ pipeline_platform.stdout }}/"
+    state: directory
+    mode: 0755
+  when:  upgrade_flag and pipeline_platform.stdout | length > 0 and pipeline_platform.stdout != pipeline_expected_version
+
+
+- name: "Back up previous install"
+  shell: "cp -R /usr/local/paxata/pipeline/*   /usr/local/paxata/{{ pipeline_platform.stdout }}/"
+  when:  upgrade_flag and pipeline_platform.stdout | length > 0 and pipeline_platform.stdout != pipeline_expected_version
+
+#- name: "Remove existing Paxata Pipeline rpm if {{ pipeline_platform.stdout }} != {{ pipeline_expected_version }} "
+#  yum: 
+#    name: paxata-pipeline-*
+#    disablerepo: "*" 
+#    state: absent
+#  when:  upgrade_flag and pipeline_platform.stdout | length > 0 and pipeline_platform.stdout != pipeline_expected_version
+
+- name: Copy Pipeline RPM  file from ansible controller
+  copy:
+    src: "{{ pipeline_download_path }}/paxata-pipeline-{{ pipeline_spark_distro }}-{{ pipeline_version }}.rpm"
+    dest: "{{ pipeline_rpm_local }}"
+    mode: 0755
+  when:
+    - upgrade_flag or ( not upgrade_flag and ( pipeline_platform is undefined or pipeline_platform.stdout | length == 0 ) )
+
+
+- name: Install Paxata Pipeline rpm
+  yum: 
+    name: "{{ pipeline_rpm_local }}"
+    disablerepo: "*" 
+    state: present
+  when:
+    - upgrade_flag or ( not upgrade_flag and ( pipeline_platform is undefined or pipeline_platform.stdout | length == 0 ) )
+
+- name: Set owner of /usr/local/paxata/pipeline to paxata
+  file:
+    path: /usr/local/paxata/pipeline
+    state: directory
+    owner: paxata
+    group: paxata
+    recurse: true
+    mode: 0755
+
+- name: Clean existing Pipeline Cache Directory {{ spark_worker_cache_dir }}
+  shell: "rm -rf {{ spark_worker_cache_dir }}/*"
+  ignore_errors: yes
+  args:
+    warn: false
+  when:
+    - upgrade_flag or ( not upgrade_flag and pipeline_platform.stdout is undefined )
+
+
+- name: Create Pipeline Cache Directory
+  file:
+    path: "{{ spark_worker_cache_dir }}"
+    state: directory
+    owner: paxata
+    mode: 0755
+  tags:
+    - start-app-pipeline
+    
+- name: Configure spark.properties in standalone spark mode
+  template:
+    src: "spark.standalone.properties.j2"
+    dest: "/usr/local/paxata/pipeline/config/spark.properties"
+    owner: paxata
+    mode: 0644
+  when: 
+    - not use_existing_spark_on_yarn
+
+- name: Get namenode host and port from core-site.xml
+  shell: "grep -o 'hdfs://[^<]*' {{ hadoop_conf_dir }}/core-site.xml"
+  register: spark_yarn_nm_host_port
+  when: 
+    - use_existing_spark_on_yarn
+
+- debug:
+    msg: "{{ spark_yarn_nm_host_port.stdout }}" 
+  when: 
+    - use_existing_spark_on_yarn 
+
+- name: Configure spark.properties in spark on yarn mode
+  template:
+    src: "spark.yarn.properties.j2"
+    dest: "/usr/local/paxata/pipeline/config/spark.properties"
+    owner: paxata
+    mode: 0644
+  when: 
+    - use_existing_spark_on_yarn
+
+- name: Configure paxata.properties
+  template:
+    src: "paxata.properties.j2"
+    dest: "/usr/local/paxata/pipeline/config/paxata.properties"
+    owner: paxata
+    mode: 0644
+
+- name: Kill any existing paxata-pipeline process
+  shell: "kill -9 $(jps | grep Main | cut -d' ' -f1) || :"
+  ignore_errors: yes
+
+- name: (Spark On YARN Only) Create /user/paxata in HDFS
+  shell: "sudo -u hdfs hadoop fs -mkdir /user/paxata; sudo -u hdfs hadoop fs -chown paxata:paxata /user/paxata; sudo -u hdfs hadoop fs -ls /user;"
+  args:
+    warn: false # set warn=false to prevent warning
+  register: hdfs_create_dir_result
+  when: 
+    - use_existing_spark_on_yarn
+
+- debug:
+    msg: "{{ hdfs_create_dir_result }}" 
+  when: 
+    - use_existing_spark_on_yarn 
+
+- name: Restart paxata-pipeline service
+  shell: service paxata-pipeline restart
+  # using shell as a workaround since the test rpms dont work with service module
+  args:
+    warn: false # set warn=false to prevent warning
+  register: result
+- debug:
+    msg: "{{ result }}"
+- name: Wait until Pipeline Server Port is available
+  wait_for: 
+    port: 8090
+    delay: 10
+
+
+- name: Start paxata-pipeline service
+  shell: service paxata-pipeline restart
+  # using shell as a workaround since the test rpms dont work with service module
+  args:
+    warn: false # set warn=false to prevent warning
+  register: result
+  tags:
+    - start-app-pipeline
+    - never
+- debug:
+    msg: "{{ result }}"
+  tags:
+    - start-app-pipeline
+    - never
+- name: Wait until Pipeline Server Port is available
+  wait_for:
+    port: 8090
+    delay: 10
+  tags:
+    - start-app-pipeline
+    - never
+
+- name: Stop paxata-pipeline service
+  shell: service paxata-pipeline stop
+  # using shell as a workaround since the test rpms dont work with service module
+  args:
+    warn: false # set warn=false to prevent warning
+  register: result
+  tags:
+    - stop-app-pipeline
+    - never
+- debug:
+    msg: "{{ result }}"
+  tags:
+    - stop-app-pipeline
+    - never
+

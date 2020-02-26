@@ -1,0 +1,39 @@
+
+  To do : mongo secured, ssl , user based auth.
+
+          
+  -- Done Make clopy of the previous server and pipeline before upgrade and then provide a way to clean the backup folder.
+  --- Done Take Mongo backup before upgrade.
+  -- Done Download all the artifcats locally and cache them with paxata s/w version and connectors as well.
+  --- Done Do not upgrade untill upgrade_flag is supplied with value true. 
+  -- Done Multiple re-run. of playbook should deploy same version from locally downloaded artifacts.
+
+  -- Done Check Oracle / OpenJDK Java versions , upgarde only when needed, esnure same supported minimum version is enforced.
+
+  -- Done If JDK update then upgrade to latest version  of openjdk: will update to specific version of JDK
+ -- Done Check if EMR is used and jdk is oracle JDK then exit.
+
+  -- Done Enable Direct load for installation on aws instances
+
+  -- Done obfuscate jks password during install, if obfuscated is not added to for JKS.
+
+Flow
+
+  If paxata server package is missing , install paxata package and connectors , this is the first time playbook is executed.
+  If Paxata server package exists and playbook is run, do nothing
+  If Paxata server package exists and playbook is run  with upgrade tag , then do upgrade of packages
+  	If paxata server package is old take backup of mongo, server folder and update paxata server package and update connectors.
+  	If playbook is run with clean backups tag, then delete everything under backup folder.
+  If new version of connectors are available and upgrade_connector tag is used, then only upgrade connector.
+
+
+  If Paxata pipeline package is missing install pipeline package
+  If Paxata pipeline package exists and playbook is run, do nothing
+  If Paxata pipeline package exists and playbook is run  with upgrade tag , then upgrade package
+  	If pipeline package is old , take backup of pipeline folder and update the pipeline package
+  	If playbook is run with clean backups tag , then delete everything under backup folder.
+
+  We will always update the guardrails whenever we do install or whenever we do upgrade.
+
+
+

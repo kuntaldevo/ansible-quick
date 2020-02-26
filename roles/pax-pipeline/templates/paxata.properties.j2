@@ -1,0 +1,23 @@
+px.rootdir={{ spark_worker_cache_dir }}
+px.total.cache.capacity={{ spark_worker_cache_capacity_mb }}
+
+# The following are used by the pipeline startup script
+px.executor.memory={{ spark_worker_memory }}
+px.partition.maxBytes=100000000
+px.ulimit.min=1024
+
+## Garbage Collection / JVM Options
+px.xx.-OmitStackTraceInFastThrow
+px.xx.InitialHeapSize=1g
+px.xx.MaxHeapSize=40g
+px.xx.MaxMetaspaceSize=512m
+px.xx.MetaspaceSize=256m
+
+px.ulimit.min=1024
+
+# Hadoop config files separated by comma
+## px.hadoop.config.files=/path/to/core-site.xml,/path/to/hdfs-site.xml
+px.hadoop.config.files={{ library_resource_path }}/core-site.xml,{{ library_resource_path }}/hdfs-site.xml
+
+
+

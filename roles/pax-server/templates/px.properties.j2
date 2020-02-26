@@ -1,0 +1,131 @@
+#
+# This file is used to override the default property values set in the file px-defaults.properties.
+#
+# To override a property copy the line from px-defaults.properties to this file and edit the value here.
+#
+#
+# Below are properties that are typically customized on install
+
+# JVM Memory Configuration
+
+px.xx.MaxHeapSize={{ (ansible_memtotal_mb * 0.7)|round|int }}m
+
+# Unique clientId for this installation (soon to be deprecated)
+px.clientId={{ inventory_hostname }}
+px.demo=false
+
+# Change localhost to the hostname of the Paxata Pipeline Server
+px.pipeline.url=http://{{ groups['pipeline'][0] }}:8090
+
+# The URL of the Paxata Server which handles project data requests from Spark workers
+# Change localhost to the hostname of Paxata Server
+
+px.library.url=http://{% if groups['core-server']|length > 1 and inventory_hostname == groups['core-server'][0] %}{{ groups['core-server'][1] }}{% else %}{{ inventory_hostname }}{% endif %}:9080/library
+
+px.internal.server.url=http://{% if groups['core-server']|length > 1 and inventory_hostname == groups['core-server'][0] %}{{ groups['core-server'][1] }}{% else %}{{ inventory_hostname }}{% endif %}:9080
+
+#
+# SAML Configuration
+#
+px.sso.JKSKeyManager.storeFile={{ pax_sso_jks_file }}
+px.sso.JKSKeyManager.key={{ pax_sso_jks_alias }}
+px.sso.JKSKeyManager.pass={{ pax_sso_jks_pwd }}
+#
+#
+# Messaging Configuration
+#
+# Valid modes are InVM, Embedded, and StandAlone.  Default mode is InVM.
+
+px.messaging.mode={% if groups['core-server']|length > 1 %}Embedded{% else %}InVM{% endif %}
+
+# Remote hosts are required for stand-alone mode; for embedded mode, this is used for clustering of the embedded hornetq servers
+px.messaging.remote.hosts={{ groups['core-server'] | reject("match", inventory_hostname) | join(",") }}
+
+# Used in embedded mode to identify the local machine
+px.messaging.local.host={{ inventory_hostname }}
+
+# Port the messaging hosts are listening on
+px.messaging.port=5445
+
+#
+# Web server port configuration
+#
+
+px.port={{ jetty_http_port }}
+px.port.redirect=true
+px.port.redirect.to={{ jetty_https_port }}
+px.use.ssl=true
+px.ssl.port={{ jetty_https_port }}
+px.ssl.cert.alias={{ pax_server_jks_alias }}
+px.ssl.keystore={{ pax_server_jks_file }}
+px.ssl.keystore.password={{ pax_server_jks_obf_pwd }}
+px.ssl.truststore={{ pax_server_jks_file }}
+px.ssl.truststore.password={{ pax_server_jks_obf_pwd }}
+px.ssl.exclude.protocols=SSLv3,TLSv1,TLSv1.1
+px.ssl.include.ciphers=TLS_RSA_WITH_AES_256_CBC_SHA,TLS_RSA_WITH_AES_128_CBC_SHA256,TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA,TLS_EMPTY_RENEGOTIATION_INFO_SCSV
+
+#
+# Mongo Configuration
+#
+
+mongo.hosts={% for current in groups['mongodb'] %}{% if current==groups['core-server'][0] and groups['core-server']|length == 1 %}127.0.0.1{% else %}{{ current }}{% endif %}:27017{% if not loop.last %},{% endif %}{% endfor %}
+
+mongo.database={{ mongodb_name }}
+
+# Mongo authentication method. It can be left blank for no authentication or
+# set to one of "cr", "SCRAM-SHA-1", "x509" or "kerberos".
+mongo.authentication.method=
+
+# These settings are used for both cr and SCRAM-SHA-1
+mongo.authentication.cr.username=
+mongo.authentication.cr.password=
+mongo.authentication.cr.source=
+#
+#
+# Library Storage Configuration
+#
+
+px.library.storage.fs.type={{ library_storage }}
+px.library.storage.fs.distribution={{ library_distribution }}
+px.library.storage.fs.user={{ library_user }}
+px.library.storage.fs.rootDirectory={{ library_root_dir }}
+px.library.storage.fs.resources={{ library_resource_path }}/core-site.xml:{{ library_resource_path }}/hdfs-site.xml
+px.library.storage.fs.realm={{ library_storage_realm }}
+px.library.storage.fs.keytab.file={{ library_storage_keytab }}
+px.library.storage.fs.krb5.conf.file={{ library_storage_krb5 }}
+
+px.temp.storage.fs.type=local
+px.temp.storage.fs.rootDirectory={{ library_temp_path }}
+px.temp.storage.fs.distribution={{ library_distribution }}
+
+#
+# Automation Configuration
+#
+
+# Number of threads to allocate to run automation
+
+{% if groups['core-server']|length == 1 %}
+px.automation.scheduler.numThreads=10
+{% elif groups['core-server']|length == 2 %}
+px.automation.scheduler.numThreads={% if inventory_hostname != groups['core-server'][1] %}0{% else %}10{% endif %}
+{% else %}
+px.automation.scheduler.numThreads={% if inventory_hostname != groups['core-server'][2] %}0{% else %}10{% endif %}
+{% endif %}
+
+
+# Set by Ansible
+# Publish parallelism settings for the Pipeline Servlet
+px.pipeline.publish.max.requests={{ ansible_processor_cores }}
+
+# Read parallelism settings for the Pipeline Servlet
+px.pipeline.get.max.requests={{ ansible_processor_cores }}
+
+# External Connector JVM Setting
+px.factory.options.default.jvm.args=-XX:+AggressiveOpts -XX:-UseCompressedOops -Xmx{{ (ansible_memtotal_mb * 0.2)|round|int }}m -Xms512m -XX:+HeapDumpOnOutOfMemoryError
+
+# Set PX ROOT DIR to absolute path
+px.root.dir=/usr/local/paxata/server/
+
+#Encryption setting for bit size
+px.encryption.keystore.keyBits={{ pax_server_encryption_keystore_keyBits }}
+# End Set by Ansible

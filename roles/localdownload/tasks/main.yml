@@ -1,0 +1,532 @@
+---
+### find latest version for paxata server on flash.paxata.com
+
+
+- name: Set default upgrade flag Fact as false
+  set_fact:
+    upgrade_flag: false
+
+- name: Set upgrade flag Fact
+  set_fact:
+    upgrade_flag: true
+  tags:
+    - upgrade
+    - never
+
+- name: "Create localdownload folder"
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: 0755
+  with_items: [ "{{ local_download_path }}", "{{ server_download_path }}" , "{{ pipeline_download_path }}" , "{{ gateway_download_path }}" , "{{ mongo_download_path }}" , "{{ conector_download_path }}" , "{{ jdk_download_path }}" , "{{ spark_download_path }}" , "{{ redshift_driver_path }}" , "{{ jdbc_driver_path }}"]
+   # Check if the paxata-server.version exists, if its does not exists or if upgrade is needed download paxata-server.version from flash.
+  # If ansible controller does not have internet connection then this file and folder should be created.
+
+- name: "Check if the local paxata-server.version exists"
+  stat:
+    path: "{{ server_download_path }}/paxata-server.version"
+  register: local_pax_server_version_exists
+
+- name: "Set local_pax_server_version_exists fact"
+  set_fact:
+    local_pax_server_version: "{{ local_pax_server_version_exists.stat.exists is defined and local_pax_server_version_exists.stat.exists }}"
+
+- name: "Download Paxata Server Version File"
+  get_url:
+    url: "{{ paxata_repo_base_url }}/paxata-server.version"
+    dest: "{{ server_download_path }}/paxata-server.version"
+    url_username: "{{ flash_username }}"
+    url_password: "{{ flash_password }}"
+    force: yes
+  register: accessFlash_server
+  when:
+    - upgrade_flag or ( not upgrade_flag and not local_pax_server_version )
+
+- debug: msg="{{ accessFlash_server }}"
+
+
+- name: "Slurp Paxata Server Version File"
+  slurp:
+    src: "{{ server_download_path }}/paxata-server.version"
+  register: pax_server_version_b64
+
+
+- debug: msg="{{ (pax_server_version_b64['content'] | b64decode)[:-1] }}"
+
+
+- name: Set pax_server_version Fact
+  set_fact:
+    pax_server_version: "{{ (pax_server_version_b64['content'] | b64decode)[:-1] }}"
+
+
+- name: Check if the paxata-pipeline.version exists
+  stat:
+    path: "{{ pipeline_download_path }}/paxata-pipeline.version"
+  register: local_pax_pipeline_version_exists
+
+- name: Set local_pax_pipeline_version_exists fact
+  set_fact:
+    local_pax_pipeline_version: "{{ local_pax_pipeline_version_exists.stat.exists is defined and local_pax_pipeline_version_exists.stat.exists }}"
+
+- name: Download Paxata Pipeline Version File
+  get_url:
+    url: "{{ paxata_repo_base_url }}/paxata-pipeline.version"
+    dest: "{{ pipeline_download_path }}/paxata-pipeline.version"
+    url_username: "{{ flash_username }}"
+    url_password: "{{ flash_password }}"
+    force: yes
+  register: accessFlash_pipeline
+  when:
+    - upgrade_flag or ( not upgrade_flag and not local_pax_pipeline_version )
+
+- debug: msg="{{ accessFlash_pipeline }}"
+
+
+- name: Slurp Paxata Pipeline Version File
+  slurp:
+    src: "{{ pipeline_download_path }}/paxata-pipeline.version"
+  register: pipeline_version_b64
+
+
+- debug: msg="{{ (pipeline_version_b64['content'] | b64decode)[:-1] }}"
+
+
+- name: Set pipeline_version Fact
+  set_fact:
+    pipeline_version: "{{ (pipeline_version_b64['content'] | b64decode)[:-1] }}"
+
+- name: Set pipeline_version Fact
+  set_fact:
+    gateway_version: "{{ (pipeline_version_b64['content'] | b64decode)[:-1] }}"
+
+
+
+### find latest version for connectors on flash.paxata.com
+- name: Find latest version for connectors
+  stat:
+    path: "{{ conector_download_path }}/connector.version"
+  register: local_connector_version_exists
+
+- name: Set local_connector_version_exists fact
+  set_fact:
+    local_connector_version: "{{ local_connector_version_exists.stat.exists is defined and local_connector_version_exists.stat.exists }}"
+
+- name: Download Connector Version File only if its upgrade or connector version is missing.
+  get_url:
+    url: "{{ paxata_repo_base_url }}/connectors/connector.version"
+    dest: "{{ conector_download_path }}/connector.version"
+    url_username: "{{ flash_username }}"
+    url_password: "{{ flash_password }}"
+    force: yes
+  retries: 2
+  delay: 3
+  when:
+    - upgrade_flag or ( not upgrade_flag and not local_connector_version )
+
+- name: Download Connector Version File to tmp location for testing only.
+  get_url:
+    url: "{{ paxata_repo_base_url }}/connectors/connector.version"
+    dest: "tmp/connector.version"
+    url_username: "{{ flash_username }}"
+    url_password: "{{ flash_password }}"
+    force: yes
+  retries: 2
+  delay: 3
+  tags:
+    - check_connector_zip
+    - never
+
+- name: Slurp Connector Version File
+  slurp:
+    src: "{{ conector_download_path }}/connector.version"
+  register: connector_version_b64
+
+
+- debug: msg="{{ (connector_version_b64['content'] | b64decode)[:-1] }}"
+
+
+- name: Set connector_version Fact
+  set_fact:
+    connector_version: "{{ (connector_version_b64['content'] | b64decode)[:-1] }}"
+
+
+
+- name: Set repo_base url
+  set_fact:
+    paxata_repo_base_url: "{{ paxata_repo_base_url }}"
+    mongo_repo_base_url: "{{ mongo_repo_base_url }}"
+  tags:
+    - check_connector_zip
+
+- name: Set Pipeline download information
+  set_fact:
+    pipeline_version: "{{ pipeline_version }}"
+    pipeline_spark_distro: "{{ pipeline_spark_distro }}"
+    pipeline_rpm_url: "{{ pipeline_rpm_url }}"
+    pipeline_rpm_md5_url: "{{ pipeline_rpm_md5_url }}"
+
+
+
+- name: Set Gateway download information
+  set_fact:
+    gateway_version: "{{ gateway_version }}"
+    gateway_spark_distro: "{{ gateway_spark_distro }}"
+    gateway_rpm_url: "{{ gateway_rpm_url }}"
+    gateway_rpm_md5_url: "{{ gateway_rpm_md5_url }}"
+
+# Download  Paxata Server md5 .
+- name: Check if local Paxata Server md5 file exists.
+  stat:
+    path: "{{ server_download_path }}/paxata-server-{{ pax_server_version }}.rpm.md5"
+  register: paxata_rpm_md5_exists
+
+- name: Set paxata_rpm_md5_exists fact.
+  set_fact:
+    local_paxata_rpm_md5: "{{ paxata_rpm_md5_exists.stat.exists is defined and paxata_rpm_md5_exists.stat.exists }}"
+
+- name: Download Paxata Server MD5 File.
+  get_url:
+    url: "{{ paxata_repo_base_url }}/paxata-server-{{ pax_server_version }}.rpm.md5"
+    dest: "{{ server_download_path }}/paxata-server-{{ pax_server_version }}.rpm.md5"
+    url_username: "{{ flash_username }}"
+    url_password: "{{ flash_password }}"
+    force: yes
+  register: pax_server_rpm_md5_download
+  when:
+    - not local_paxata_rpm_md5
+
+- name: Register md5 to a variable.
+  shell: "cat {{ server_download_path }}/paxata-server-{{ pax_server_version }}.rpm.md5"
+  register: paxserver_md5
+
+
+# Download paxata server rpm if the file does not exists.
+- name: Check if local paxata server rpm if the file does not exists.
+  stat:
+    path: "{{ server_download_path }}/paxata-server-{{ pax_server_version }}.rpm"
+  register: paxata_rpm_exists
+
+- name: Set paxata_rpm_exists fact
+  set_fact:
+    local_paxata_rpm: "{{ paxata_rpm_exists.stat.exists is defined and paxata_rpm_exists.stat.exists }}"
+
+- name: Download Paxata Server RPM File
+  get_url:
+    url: "{{ paxata_repo_base_url }}/paxata-server-{{ pax_server_version }}.rpm"
+    dest: "{{ server_download_path }}/paxata-server-{{ pax_server_version }}.rpm"
+    url_username: "{{ flash_username }}"
+    url_password: "{{ flash_password }}"
+    checksum: "md5:{{ paxserver_md5.stdout }}"
+    force: yes
+  register: pax_pipeline_rpm_download
+  when:
+    -  not local_paxata_rpm
+
+# Download  Paxata Pipeline md5
+- name: Check if local Paxata Pipeline md5
+  stat:
+    path: "{{ pipeline_download_path }}/paxata-pipeline-{{ pipeline_spark_distro }}-{{ pipeline_version }}.rpm.md5"
+  register: paxata_pipeline_rpm_md5_exists
+
+- name: Set paxata_pipeline_rpm_md5_exists fact
+  set_fact:
+    local_paxata_pipeline_rpm_md5: "{{ paxata_pipeline_rpm_md5_exists.stat.exists is defined and paxata_pipeline_rpm_md5_exists.stat.exists }}"
+
+- name: Download Paxata Pipeline MD5 File
+  get_url:
+    url: "{{ paxata_repo_base_url }}/paxata-pipeline-{{ pipeline_spark_distro }}-{{ pipeline_version }}.rpm.md5"
+    dest: "{{ pipeline_download_path }}/paxata-pipeline-{{ pipeline_spark_distro }}-{{ pipeline_version }}.rpm.md5"
+    url_username: "{{ flash_username }}"
+    url_password: "{{ flash_password }}"
+    force: yes
+  register: pax_server_rpm_md5_download
+  when:
+    -  not local_paxata_pipeline_rpm_md5
+
+- name: Register md5 to a variable
+  shell: "cat {{ pipeline_download_path }}/paxata-pipeline-{{ pipeline_spark_distro }}-{{ pipeline_version }}.rpm.md5"
+  register: pax_pipeline_md5
+
+
+# Download paxata pipeline rpm if the file does not exists.
+- name: Check if local paxata pipeline rpm file does  exists.
+  stat:
+    path: "{{ pipeline_download_path }}/paxata-pipeline-{{ pipeline_spark_distro }}-{{ pipeline_version }}.rpm"
+  register: pax_pipeline_rpm_exists
+
+- name: Set pax_pipeline_rpm_exists fact
+  set_fact:
+    local_pax_pipeline_rpm: "{{ pax_pipeline_rpm_exists.stat.exists is defined and pax_pipeline_rpm_exists.stat.exists }}"
+
+- name: Download Pipeline RPM File
+  get_url:
+    url: "{{ paxata_repo_base_url }}/paxata-pipeline-{{ pipeline_spark_distro }}-{{ pipeline_version }}.rpm"
+    dest: "{{ pipeline_download_path }}/paxata-pipeline-{{ pipeline_spark_distro }}-{{ pipeline_version }}.rpm"
+    url_username: "{{ flash_username }}"
+    url_password: "{{ flash_password }}"
+    checksum: "md5:{{ pax_pipeline_md5.stdout }}"
+    force: yes
+  register: pax_pipeline_rpm_download
+  when:
+    - not local_pax_pipeline_rpm
+
+# Download  Paxata Gateway md5 , paxata gateway rpm if these files does not exists and gateway needs to be installed based on playbook settings.
+- name: Check if Gateway md5 files does not exists.
+  stat:
+    path: "{{ gateway_download_path }}/paxata-gateway-{{ gateway_spark_distro }}-{{ gateway_version }}.rpm.md5"
+  register: paxata_gateway_rpm_md5_exists
+
+- name: Set paxata_gateway_rpm_md5_exists fact
+  set_fact:
+    local_paxata_gateway_rpm_md5: "{{ paxata_gateway_rpm_md5_exists.stat.exists is defined and paxata_gateway_rpm_md5_exists.stat.exists }}"
+
+- name: Download Paxata Gateway MD5 File
+  get_url:
+    url: "{{ paxata_repo_base_url }}/paxata-gateway-{{ gateway_spark_distro }}-{{ gateway_version }}.rpm.md5"
+    dest: "{{ gateway_download_path }}/paxata-gateway-{{ gateway_spark_distro }}-{{ gateway_version }}.rpm.md5"
+    url_username: "{{ flash_username }}"
+    url_password: "{{ flash_password }}"
+  register: pax_gateway_rpm_md5_download
+  when:
+    - not local_paxata_gateway_rpm_md5
+
+- name: Register md5 to a variable
+  shell: "cat {{ gateway_download_path }}/paxata-gateway-{{ gateway_spark_distro }}-{{ gateway_version }}.rpm.md5"
+  register: pax_gateway_md5
+
+
+# Download paxata gateway rpm if the file does not exists.
+- name: Check if local  gateway rpm file exists.
+  stat:
+    path: "{{ gateway_download_path }}/paxata-gateway-{{ gateway_spark_distro }}-{{ gateway_version }}.rpm"
+  register: pax_gateway_rpm_exists
+
+
+- name: Set pax_gateway_rpm_exists fact
+  set_fact:
+    local_pax_gateway_rpm: "{{ pax_gateway_rpm_exists.stat.exists is defined and pax_gateway_rpm_exists.stat.exists }}"
+
+- name: Download Paxata gateway RPM File
+  get_url:
+    url: "{{ paxata_repo_base_url }}/paxata-gateway-{{ gateway_spark_distro }}-{{ gateway_version }}.rpm"
+    dest: "{{ gateway_download_path }}/paxata-gateway-{{ gateway_spark_distro }}-{{ gateway_version }}.rpm"
+    url_username: "{{ flash_username }}"
+    url_password: "{{ flash_password }}"
+    checksum: "md5:{{ pax_gateway_md5.stdout }}"
+    force: yes
+  register: pax_gateway_rpm_download
+  when:
+    - not local_pax_gateway_rpm
+
+
+
+# Download Connector if its upgrade or connector zip is missing.
+
+  # - name: Check if expected connector zip version already exists in {{ connector_bootstrap_dir }}/
+  # find:
+  #     paths: "{{ conector_download_path }}/"
+  #     patterns: "connector-*{{ connector_version }}*.zip"
+  #   register: files_matched
+  # tags:
+#     - check_connector_zip
+
+  # - debug:
+  #     msg: "Detected Connector version: {{ connector_version }} Number of examined files: {{ files_matched.examined }} Number of matched files: {{ files_matched.matched }}"
+  # tags:
+#     - check_connector_zip
+
+
+  # - name: Download connector zip files from https://flash.paxata.com/
+  # get_url:
+  #     url: "{{ connector_zip_url }}/{{ item }}"
+  # dest: "{{ conector_download_path }}/{{ item }}"
+  # url_username: "{{ flash_username }}"
+  # url_password: "{{ flash_password }}"
+  # with_items: "{{ connector_names }}"
+  # retries: 5
+  # when:
+  # - upgrade_flag or ( not upgrade_flag and files_matched.matched < connector_names|length )
+  #   - item is not search("tableau") or jetty_https_port > 1024
+  # tags:
+  #     - check_connector_zip
+
+- name: "Check if Connector zip files does not exists."
+  find:
+    paths: "{{ conector_download_path }}"
+    patterns: "{{ item }}"
+  register: conector_lookup_list
+  with_items: "{{ connector_names }}"
+  tags:
+     - check_connector_zip
+
+- name: Download missing Connector zip files.
+  get_url:
+    url: "{{ connector_zip_url }}/{{ item.item }}"
+    dest: "{{ conector_download_path }}/{{ item.item }}"
+    url_username: "{{ flash_username }}"
+    url_password: "{{ flash_password }}"
+  with_items: "{{ conector_lookup_list.results }}"
+  retries: 2
+  delay: 1
+  register: result
+  until: result is succeeded
+  when:
+    - upgrade_flag or ( not upgrade_flag and item.matched == 0 )
+  tags:
+    - check_connector_zip
+
+
+
+
+## Download Redshift Driver jar
+- name: ensure Redshift Driver Directory exists
+  file:
+    path: "{{ redshift_driver_path }}"
+    state: directory
+
+- name: Check if Redshift Driver does not exists.
+  stat:
+    path: "{{ redshift_driver_path }}/{{ redshift_driver_jar }}"
+  register: redshift_driver
+
+- name: Set redshift_driver fact
+  set_fact:
+    local_redshift_driver_jar: "{{ redshift_driver.stat.exists is defined and redshift_driver.stat.exists }}"
+
+
+- name: "Download Redshift Driver from {{ redshift_url }}"
+  get_url:
+    url: "{{ redshift_url }}"
+    dest: "{{ redshift_driver_path }}/{{ redshift_driver_jar }}"
+  when:
+    - (not local_redshift_driver_jar)
+
+## Download JDBC Driver jars.
+
+
+- name: Check if expected connector zip version already exists in {{ connector_bootstrap_dir }}/
+  find:
+    paths: "{{ jdbc_driver_path }}/"
+    patterns: "*.jar"
+  register: jar_files_matched
+
+
+- name: Download jdbc  jar files
+  get_url:
+    url: "{{ item }}"
+    dest: '{{ jdbc_driver_path }}/{{ item.split("/")[-1] }}'
+  with_items: "{{ jdbc_driver_jars }}"
+  retries: 5
+
+
+
+
+# Download  Mongo rpm if mongo rpm files does not exists.
+
+- name: "Check  Mongo rpm if mongo rpm files does not exists."
+  find:
+    paths: "{{ mongo_download_path }}"
+    patterns: "{{ item }}"
+  register: mongo_rpm_lookup_list
+  with_items:
+    - "{{ mongodb_packages }}"
+  tags:
+    - test_mongo
+
+- debug:
+    msg: "{{ item.item }} present {{ item.matched }}"
+  with_items: "{{ mongo_rpm_lookup_list.results }}"
+  tags:
+    - test_mongo
+
+- name: Download Mongo RPM Files.
+  get_url:
+    url: "{{ mongo_repo_base_url }}/{{ item.item }}"
+    dest: "{{ mongo_download_path }}/{{ item.item }}"
+  with_items: "{{ mongo_rpm_lookup_list.results }}"
+  retries: 2
+  delay: 1
+  register: result
+  until: result is succeeded
+  when:
+    - item.matched == 0
+  tags:
+    - test_mongo
+
+
+# Download java rpm if the jdk rpm does not exists.
+- name: Download java rpm if the jdk rpm does not exists.
+  stat:
+    path: "{{ jdk_download_path }}/{{ jdk_rpm_name }}"
+  register: jdk_rpm_exists
+
+- name: Set jdk_rpm_exists fact
+  set_fact:
+    local_jdk_rpm: "{{ jdk_rpm_exists is defined and jdk_rpm_exists.stat.exists }}"
+
+- name: Download JDK  RPM File
+  get_url:
+    url: "{{ jdk_rpm_url }}"
+    dest: "{{ jdk_download_path }}/{{ jdk_rpm_name }}"
+    force: yes
+  register: jdk_rpm_download
+  when:
+    - upgrade_flag or ( not upgrade_flag and not local_jdk_rpm )
+
+
+
+# Download spark tgz if the spark version does not exists.
+
+- name: Check if spark sha512  does not exists.
+  stat:
+    path: "{{ spark_download_path }}/{{spark_filename }}.tgz.sha512"
+  register: spark_sha512
+
+- name: Set spark_sha512_exists fact
+  set_fact:
+    local_spark_sha512: "{{ spark_sha512.stat.exists is defined and spark_sha512.stat.exists }}"
+
+
+- name: "Download Spark TGZ sha512 file from {{ spark_tgz_sha512_url }}"
+  get_url:
+    url: "{{ spark_tgz_sha512_url }}"
+    dest: "{{ spark_download_path }}/{{spark_filename }}.tgz.sha512"
+  retries:
+  when:
+    - upgrade_flag or ( not upgrade_flag and not local_spark_sha512 )
+
+- name: Register sha512 to a variable
+  shell: "cat {{ spark_download_path }}/{{spark_filename }}.tgz.sha512"
+  register: spark_tgz_sha512
+
+
+- debug:
+    msg: "spark_tgz_sha512={{ spark_tgz_sha512.stdout | regex_replace( spark_filename + '.tgz: ', '') }}"
+
+
+- name: Check if the spark tgz does not exists.
+  stat:
+    path: "{{ spark_download_path }}/{{spark_filename }}.tgz"
+  register: spark_tgz
+
+- name: Set spark_sha512_exists fact
+  set_fact:
+    local_spark_tgz: "{{ spark_tgz.stat.exists is defined and spark_tgz.stat.exists }}"
+
+- name: Download Spark and check sum.
+  get_url:
+    url: "{{ spark_tgz_url }}"
+    dest: "{{ spark_download_path }}/{{spark_filename }}.tgz"
+    checksum: "sha512:{{ spark_tgz_sha512.stdout | regex_replace( spark_filename + '.tgz: ', '') }}"
+    mode: 0755
+  retries: 2
+  delay: 3
+  register: result
+  until: result is succeeded
+  when:
+    - upgrade_flag or ( not upgrade_flag and not local_spark_tgz )
+
+
+
+
+### END find latest version on flash.paxata.com

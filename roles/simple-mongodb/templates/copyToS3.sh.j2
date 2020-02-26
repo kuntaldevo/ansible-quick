@@ -1,0 +1,30 @@
+#!/bin/bash
+d=$(date +%Y-%m-%d)
+t=$(date +"%T %Y-%m-%d")
+
+fullName=$(sudo find /usr/local/paxata/mongo_backups -name "*.tgz" -type f -printf '%T@ %p\n' | sort -n | tail -1 | cut -f2- -d" ")
+filename=$(basename $fullName)
+
+
+{% if s3_authentication  == 'keypair' %}
+
+	count=$(AWS_ACCESS_KEY_ID={{ s3_access_key }} AWS_SECRET_ACCESS_KEY={{ s3_secret_key }} aws s3 ls s3://{{ s3_bucket_name }}/{{ mongodump_remote_dir }}/$filename | wc -l)
+	size=$(AWS_ACCESS_KEY_ID={{ s3_access_key }} AWS_SECRET_ACCESS_KEY={{ s3_secret_key }} aws s3 ls s3://{{ s3_bucket_name }}/{{ mongodump_remote_dir }}/$filename | awk '{print $3}')
+    if [ $count -gt 0 ] && [ $size -gt 10000000 ]; then
+    	echo "$t s3://{{ s3_bucket_name }}/{{ mongodump_remote_dir }}/$filename  with more than 10mb already exists!" >> {{ mongodump_local_dir }}/$d/paxata.log
+    else
+		AWS_ACCESS_KEY_ID={{ s3_access_key }} AWS_SECRET_ACCESS_KEY={{ s3_secret_key }} aws s3 cp {{ mongodump_local_dir }}/$d/$d.tgz s3://{{ s3_bucket_name }}/{{ mongodump_remote_dir }}/$d.tgz >> {{ mongodump_local_dir }}/$d/paxata.log 2>&1;
+		echo "$t $fullName is copied to s3://{{ s3_bucket_name }}/{{ mongodump_remote_dir }}/$filename" >> {{ mongodump_local_dir }}/$d/paxata.log
+	fi
+	tail -10 {{ mongodump_local_dir }}/$d/paxata.log
+{% else %}
+	count=$(aws s3 ls s3://{{ s3_bucket_name }}/{{ mongodump_remote_dir }}/$filename | wc -l)
+	size=$(aws s3 ls s3://{{ s3_bucket_name }}/{{ mongodump_remote_dir }}/$filename | awk '{print $3}')
+    if [ $count -gt 0 ] && [ $size -gt 10000000 ]; then
+    	echo "$t s3://{{ s3_bucket_name }}/{{ mongodump_remote_dir }}/$filename with more than 10mb already exists!" >> {{ mongodump_local_dir }}/$d/paxata.log
+    else
+		aws s3 cp $fullName  s3://{{ s3_bucket_name }}/{{ mongodump_remote_dir }}/$filename >> {{ mongodump_local_dir }}/$d/paxata.log 2>&1;
+		echo "$t $fullName  is copied to s3://{{ s3_bucket_name }}/{{ mongodump_remote_dir }}/$filename" >> {{ mongodump_local_dir }}/$d/paxata.log 2>&1;
+	fi
+	tail -10 {{ mongodump_local_dir }}/$d/paxata.log
+{% endif %}

@@ -1,0 +1,135 @@
+---
+
+- name: Ensure dig (bind-utils) is installed
+  yum:
+    name: bind-utils
+    state: present
+
+- name: Extract gateway service name
+  shell: "rpm -qa | grep paxata-gateway | cut -d'-' -f3,4"
+  register: gateway_platform
+  args:
+    warn: false # set warn=false to prevent warning
+
+- name: Setting expected gateway version
+  set_fact:
+    gateway_expected_version: "{{ gateway_spark_distro ~ '-' ~ gateway_version }}"
+
+
+
+- debug:
+    msg: "Existing gateway platform = {{ gateway_platform.stdout }} and expected version is  {{ gateway_expected_version }}"
+
+- name: Fail if existing gateway rpm is detected but does not match with expected version and its not an upgrade
+  fail:
+    msg: "Existing Paxata gateway RPM , found but it does not match with expected version and its not an upgrade"
+  when:
+    - not upgrade_flag and gateway_platform is defined and gateway_platform.stdout | length > 0 and ( gateway_platform.stdout != gateway_expected_version)
+
+  # Take backup of existing gateway folder before removing the rpm.
+
+- name: "Remove existing Paxata gateway rpm if {{ gateway_platform.stdout }} != {{ gateway_expected_version }} "
+  yum:
+    name: paxata-gateway-*
+    disablerepo: "*"
+    state: absent
+  when:  gateway_platform.stdout | length > 0 and gateway_platform.stdout != gateway_expected_version
+  tags:
+    - upgrade
+    - never
+
+
+- name: " Copy Paxata Gateway file, {{ gateway_download_path }}/paxata-gateway-{{ gateway_spark_distro }}-{{ gateway_version }}.rpm from from ansible controller "
+  copy:
+    src: "{{ gateway_download_path }}/paxata-gateway-{{ gateway_spark_distro }}-{{ gateway_version }}.rpm"
+    dest: "{{ gateway_rpm_local }}"
+    mode: 0755
+
+
+- name: Install Paxata gateway rpm
+  yum:
+    name: "{{ gateway_rpm_local }}"
+    disablerepo: "*"
+    state: present
+  when:
+    - upgrade_flag or ( not upgrade_flag and ( gateway_platform is undefined or gateway_platform.stdout | length == 0 ) )
+
+- name: Configure paxata.properties
+  template:
+    src: "paxata.properties.j2"
+    dest: "/usr/local/paxata/gateway/config/paxata.properties"
+    owner: paxata
+    mode: 0644
+
+- name: Kill any existing paxata-gateway process
+  shell: "kill -9 $(jps | grep Gateway | cut -d' ' -f1) || :"
+  ignore_errors: yes
+
+- name: Create {{ hdfs_base_path }} in HDFS
+  shell: "sudo -u hdfs hadoop fs -mkdir -p {{ hdfs_base_path }}; sudo -u hdfs hadoop fs -chown -R paxata:paxata /user/paxata; sudo -u hdfs hadoop fs -chown -R paxata:paxata {{ hdfs_base_path }}; sudo -u hdfs hadoop fs -chmod -R 773 {{ hdfs_base_path }}; sudo -u hdfs hadoop fs -ls /user/;"
+  args:
+    warn: false # set warn=false to prevent warning
+  register: hdfs_create_dir_result
+  tags:
+    - upgrade
+    - never
+
+- debug:
+    msg: "{{ hdfs_create_dir_result }}"
+  tags:
+    - upgrade
+    - never
+
+
+- name: Restart paxata-gateway service
+  shell: service paxata-gateway restart
+  # using shell as a workaround since the test rpms dont work with service module
+  args:
+    warn: false # set warn=false to prevent warning
+  register: result
+
+- debug:
+    msg: "{{ result }}"
+- name: Wait until gateway Server Port is available
+  wait_for:
+    port: 8071
+    delay: 10
+
+- name: Start paxata-gateway service
+  shell: service paxata-gateway start
+  # using shell as a workaround since the test rpms dont work with service module
+  args:
+    warn: false # set warn=false to prevent warning
+  register: result
+  tags:
+    - start-app-gateway
+    - never
+
+- debug:
+    msg: "{{ result }}"
+  tags:
+    - start-app-gateway
+    - never
+
+- name: Wait until gateway Server Port is available
+  wait_for:
+    port: 8071
+    delay: 10
+  tags:
+    - start-app-gateway
+    - never
+
+- name: Stop paxata-gateway service
+  shell: service paxata-gateway stop
+  # using shell as a workaround since the test rpms dont work with service module
+  args:
+    warn: false # set warn=false to prevent warning
+  register: result
+  tags:
+    - stop-app-gateway
+    - never
+- debug:
+    msg: "{{ result }}"
+  tags:
+    - stop-app-gateway
+    - never

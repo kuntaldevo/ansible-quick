@@ -1,0 +1,22 @@
+# path to hadoop install, if none then set to an existing directory
+hadoop.home={{ hadoop_home }}
+
+# path to spark2 installation
+px.pi.spark.home={{ spark_dir }}
+
+# comma-separated paths to the 'site' files, including at least core-site.xml (for spark-submit) and yarn-site.xml (for distcp)
+px.pi.hadoop.site-files={{ hadoop_conf_dir }}/core-site.xml,{{ hadoop_conf_dir }}/hdfs-site.xml,{{ hadoop_conf_dir }}/yarn-site.xml
+
+# HDFS location where paxata staging information temporarily resides.  This directory needs to be write+execute for all import users
+px.pi.hdfs.basepath={{ hdfs_base_path }}
+
+# principal and keytab pair for kerberos, otherwise comment out
+px.pi.hdfs.principal=
+px.pi.hdfs.keytab=
+
+# DO NOT EDIT
+px.pi.server.port=8071
+px.pi.rootpath=/usr/local/paxata/gateway
+px.pi.logpath=/usr/local/paxata/gateway/logs
+px.pi.spark.master=yarn
+

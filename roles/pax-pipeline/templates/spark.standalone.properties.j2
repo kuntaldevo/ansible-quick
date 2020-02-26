@@ -1,0 +1,19 @@
+##Valid config options are spark://master:port or yarn-client
+master.url=spark://{{ groups['spark-master'][0] }}:7077
+spark.home={{ spark_dir }}
+
+# JVM/GC options for spark executors in standalone mode
+spark-standalone.extra.args=-XX:-OmitStackTraceInFastThrow -XX:MetaspaceSize=256m -XX:MaxMetaspaceSize=512m -Xloggc:{{ spark_dir }}/logs/gc.log -XX:+PrintGCDateStamps -XX:+PrintGCDetails -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=20 -XX:GCLogFileSize=48M -XX:+PrintTenuringDistribution -XX:+PrintGCApplicationConcurrentTime -XX:+PrintGCApplicationStoppedTime -XX:+PrintAdaptiveSizePolicy -XX:+PrintHeapAtGC -XX:+PrintGCCause -XX:+PrintReferenceGC -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={{ spark_dir }}/logs/heapdump.hprof -XX:+PrintSafepointStatistics -XX:PrintSafepointStatisticsCount=1
+
+# JVM/GC options for spark executors in Yarn-managed cluster
+spark-submit.extra.args=--conf "-XX:-OmitStackTraceInFastThrow -XX:MetaspaceSize=256m -XX:MaxMetaspaceSize=512m -Xloggc:{{ spark_dir }}/logs/gc.log -XX:+PrintGCDateStamps -XX:+PrintGCDetails -XX:+UseGCLogFileRotation -XX:NumberOfGCLogFiles=20 -XX:GCLogFileSize=48M -XX:+PrintTenuringDistribution -XX:+PrintGCApplicationConcurrentTime -XX:+PrintGCApplicationStoppedTime -XX:+PrintAdaptiveSizePolicy -XX:+PrintHeapAtGC -XX:+PrintGCCause -XX:+PrintReferenceGC -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath={{ spark_dir }}/logs/heapdump.hprof  -XX:+PrintSafepointStatistics -XX:PrintSafepointStatisticsCount=1"
+
+
+##The config variables below are only required for Spark on YARN
+# hadoop.conf=/etc/hadoop/conf
+# yarn.num.executors=5
+# yarn.executor.cores=1
+# spark.yarn.jar=hdfs://paxcdh54yik/user/spark/share/lib/spark-assembly-1.3.0-cdh5.4.8-hadoop2.6.0-cdh5.4.8.jar
+# spark.yarn.queue=spark
+# additional arguments to pass to spark-submit; for example, for security options see http://spark.apache.org/docs/latest/security.html
+# spark-submit.extra.args=

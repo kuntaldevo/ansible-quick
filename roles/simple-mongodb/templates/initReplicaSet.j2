@@ -1,0 +1,13 @@
+rs.initiate(
+	{
+		_id: "{{ mongoReplicaSetName }}",
+		version: 1,
+		members: [
+			{% for host in groups['mongodb'] %}
+				{ _id: {{loop.index}}, host : "{{host}}:27017", priority: {{hostvars[host]['priority']}}, votes: {{hostvars[host]['votes']}} }{% if not loop.last %},{% endif %}
+			{% endfor %}
+		]
+	}
+)
+
+printjson(rs.status())

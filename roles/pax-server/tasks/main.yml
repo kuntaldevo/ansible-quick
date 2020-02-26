@@ -1,0 +1,899 @@
+---
+- debug: msg="play_hosts={{play_hosts}}"
+
+- name: Extract Core Server service name
+  shell: "rpm -qa | grep paxata-server | cut -d'-' -f3"
+  register: coreserver_platform
+  args:
+    warn: false # set warn=false to prevent warning
+
+- name: Setting expected gateway version
+  set_fact:
+    coreserver_expected_version: "{{ pax_server_version }}"
+
+
+
+- debug:
+    msg: "Existing core server version  = {{ coreserver_platform.stdout }} and expected version is  {{ coreserver_expected_version }}"
+
+- name: Fail if existing core server rpm is detected but does not match with expected version and its not an upgrade
+  fail:
+    msg: "Existing Paxata core server RPM found but it does not match with expected version and its not an upgrade"
+  when:
+    - not upgrade_flag and coreserver_platform is defined and coreserver_platform.stdout | length > 0 and ( coreserver_platform.stdout != coreserver_expected_version)
+
+  # Take backup of existing gateway folder before removing the rpm.
+
+- name: "Create Back up folder for upgrade "
+  file:
+    path: "/usr/local/paxata/{{ coreserver_platform.stdout }}/"
+    state: directory
+    mode: 0755
+  when:  upgrade_flag and coreserver_platform.stdout | length > 0 and coreserver_platform.stdout != coreserver_expected_version
+
+
+- name: "Back up previous install"
+  shell: "cp -R /usr/local/paxata/server/*    /usr/local/paxata/{{ coreserver_platform.stdout }}/"
+  when:  upgrade_flag and coreserver_platform.stdout | length > 0 and coreserver_platform.stdout != coreserver_expected_version
+
+
+#- name: "Remove existing Paxata core server rpm if {{ coreserver_platform.stdout }} != {{ coreserver_expected_version }} "
+#  yum:
+#    name: paxata-server-*
+#    disablerepo: "*"
+#    state: absent
+#  when:  upgrade_flag and coreserver_platform.stdout | length > 0 and coreserver_platform.stdout != coreserver_expected_version
+
+
+- name: " Copy Paxata Core Server file, {{ server_download_path }}/paxata-server-{{ pax_server_version }}.rpm from from ansible controller "
+  copy:
+    src: "{{ server_download_path }}/paxata-server-{{ pax_server_version }}.rpm"
+    dest: "{{ coreserver_rpm_local }}"
+    mode: 0755
+  when:
+    - upgrade_flag or ( not upgrade_flag and ( coreserver_platform is undefined or coreserver_platform.stdout | length == 0 ) )
+
+
+
+- name: Install Paxata core server rpm
+  yum:
+    name: "{{ coreserver_rpm_local }}"
+    disablerepo: "*"
+    state: present
+  when:
+    - upgrade_flag or ( not upgrade_flag and ( coreserver_platform is undefined or coreserver_platform.stdout | length == 0 ) )
+
+- name: Set owner of /usr/local/paxata/server to paxata
+  file:
+    path: /usr/local/paxata/server
+    state: directory
+    owner: paxata
+    group: paxata
+    recurse: true
+    mode: 0755
+
+#To-do Copy JKS file from local if the source file exists or create self signed cert if the target jks file on server does not exists
+
+- name: Check if {{ pax_server_jks_file }} file exists
+  stat: path={{ pax_server_jks_file }}
+  register: jks_file_exist
+- debug:
+    msg: "{{ jks_file_exist }}"
+- name: Create Self-Signed Java Keystore File
+  command: /usr/lib/jvm/jre-1.8.0-openjdk/bin/keytool \
+    -genkey \
+    -alias {{ pax_server_jks_alias }} \
+    -keyalg RSA \
+    -keysize 2048 \
+    -keystore {{ pax_server_jks_file }} \
+    -dname "CN={{ inventory_hostname }},OU=IT,O=IT Admin,L=Redwood City,ST=CA,C=US" 
+    -keypass {{ pax_server_jks_password }}
+    -storepass {{ pax_server_jks_password }}
+  when: jks_file_exist.stat.exists == false
+
+- name: Get Java path
+  shell: "alternatives --display java | grep \"Current\" |  cut -f 5 -d \" \" | rev | cut -c 2- | rev"
+  register: java_path_out
+  tags:
+  - javatest
+
+- name: Set Java home path
+  set_fact:
+    java_home_path: "{{ java_path_out.stdout  | regex_replace('^.*(\\d)$', '\\1') | regex_replace('(/jre/bin/java)') | regex_replace('(/bin/java)')  }}"
+    java_path: "{{ java_path_out.stdout  | regex_replace('^.*(\\d)$', '\\1')  }} "
+  tags:
+  - javatest
+
+- debug:
+    msg: " Java Home Path is: {{ java_home_path }} and Java Path is : {{ java_path }}"
+  tags:
+  - javatest
+
+- name: Check getcap
+  shell: "getcap {{ java_path }}"
+  register: set_cap_out
+  ignore_errors: true
+  tags:
+    - javatest
+
+- name: Set fact for Java distro
+  set_fact:
+    set_cap_set: "{{ set_cap_out.stdout != \"\" and set_cap_out.stdout.split('=')[1] is search (\"cap_net_bind_service\") }}"
+  tags:
+  - javatest
+
+
+
+- name: Remove Setcap
+  shell: "setcap -r {{ java_path }}"
+  ignore_errors: true
+  when: set_cap_set
+  tags:
+  - javatest
+
+- name: Configure Setcap to allow jetty port <= 1024
+  shell: setcap 'cap_net_bind_service=+ep' {{ java_path }} && \
+    echo '{{ java_path_out.stdout  | regex_replace('^.*(\\d)$', '\\1') | regex_replace('(/bin/java)') }}/lib/amd64/jli' > /etc/ld.so.conf.d/java.conf && \
+    ldconfig
+  when: jetty_http_port <= 1024 or jetty_https_port <= 1024
+  tags:
+  - javatest
+
+- name: Obsfucate JKS password and store it in px.propeties
+  shell: "{ output=$(java -cp /usr/local/paxata/server/lib/jetty-util-*.jar org.eclipse.jetty.util.security.Password {{ pax_server_jks_password }}  2>&1 1>&3-) ;} 3>&1 ; echo $output | awk -F'OBF:' 'NR==1{ print $2 }' |  awk -F' ' 'NR==1{ print $1 }'"
+  register: obs_pwd
+  tags:
+    - javatest
+
+- debug:
+    msg: " Obsfucated password is {{ obs_pwd.stdout }}"
+  tags:
+    - javatest
+
+- name: Set Obsfucated assword
+  set_fact:
+    pax_server_jks_obf_pwd: "OBF:{{ obs_pwd.stdout }}"
+
+- name: Configure px.properties
+  template:
+    src: "px.properties.j2"
+    dest: "/usr/local/paxata/server/config/px.properties"
+    owner: paxata
+    mode: 0644
+
+
+- name: Check if pes.properties already exists
+  stat: path=/usr/local/paxata/server/config/pes.properties
+  register: pes_exist
+ 
+- name: Configure pes.properties (skip if pes.properties already defined)
+  template:
+    src: "pes.properties.j2"
+    dest: "/usr/local/paxata/server/config/pes.properties"
+    owner: paxata
+    mode: 0644
+  when: pes_exist.stat.exists == False
+
+- name: "copy previous version pes.properties  previous install"
+  shell: "cp -R /usr/local/paxata/{{ coreserver_platform.stdout }}/config/pes.properties   /usr/local/paxata/server/config/"
+  when:  upgrade_flag and coreserver_platform.stdout | length > 0 and coreserver_platform.stdout != coreserver_expected_version
+
+- name: "copy previous version drivers to current install"
+  shell: "cp -R /usr/local/paxata/{{ coreserver_platform.stdout }}/drivers/*   /usr/local/paxata/server/drivers/"
+  when:  upgrade_flag and coreserver_platform.stdout | length > 0 and coreserver_platform.stdout != coreserver_expected_version
+
+
+- name: Check if expected connector zip version already exists in {{ connector_bootstrap_dir }}/
+  find:
+    paths: "{{ connector_bootstrap_dir }}/"
+    patterns: "connector-*{{ connector_version }}*.zip"
+  register: files_matched
+  tags:
+    - check_connector_zip
+
+- debug:
+    msg: "Detected Connector version: {{ connector_version }} Number of examined files: {{ files_matched.examined }} Number of matched files: {{ files_matched.matched }}"
+  tags:
+    - check_connector_zip
+
+#- name: Delete connector bootstrap dir when total number of matched connector zip is less than 20 but there is at least one zip examined
+#  file:
+#    state: absent
+#    path: "{{ connector_bootstrap_dir }}/"
+#  when:
+#    - files_matched.matched < 20
+#    - files_matched.examined > 0
+#  tags:
+#    - check_connector_zip
+
+- name: Create connector bootstrap dir when total number of matched connector zip is less than 20 but there is at least one zip examined
+  file:
+    state: directory
+    path: "{{ connector_bootstrap_dir }}/"
+    owner: paxata
+    mode: 0755
+  when: 
+    - files_matched.matched < 20
+    - files_matched.examined > 0
+  tags:
+    - check_connector_zip
+
+#- name: Delete Existing Tableau connector if https port is below 1024
+#  file:
+#    state: absent
+#    path: "{{ connector_bootstrap_dir }}/connector-tableau-{{ connector_version }}.zip"
+#  when: jetty_https_port < 1024
+#  tags:
+#    - check_connector_zip
+
+- name: "Check if Connector zip files does not exists in bootstrap."
+  find:
+    paths: "{{ connector_bootstrap_dir }}"
+    patterns: "{{ item }}"
+  register: conector_lookup_list
+  with_items: "{{ connector_names }}"
+  tags:
+    - check_connector_zip
+
+- name: Download missing Connector zip files from ansible controller.
+  copy:
+    src: "{{ conector_download_path }}/{{ item.item }}"
+    dest: "{{ connector_bootstrap_dir }}/{{ item.item }}"
+  with_items: "{{ conector_lookup_list.results }}"
+  when:
+    - item.matched == 0
+  tags:
+    - check_connector_zip
+
+
+
+## only install redshift when server has internet access
+- name: Create Redshift Driver Directory
+  file:
+    path: "{{ redshift_driver_dir }}"
+    state: directory
+    owner: paxata
+    mode: 0755
+  when: inventory_hostname in groups['core-server']
+  
+- name: Download Redshift Driver
+  copy:
+    src: "{{ redshift_driver_path }}/{{ redshift_driver_jar }}"
+    dest: "{{ redshift_driver_dir }}/{{ redshift_driver_jar }}"
+    owner: paxata
+    mode: 0755
+  when: inventory_hostname in groups['core-server']
+
+- name: check if keytab exists in local server
+  local_action: stat path=keytab/paxatadatalib.keytab
+  register: local_keytab_exists
+  when: 
+    - library_storage == 'keytab'
+
+- name: check if keytab exists in remote server(s)
+  stat: path={{ library_storage_keytab }}
+  register: remote_keytab_exists
+  when: 
+    - library_storage == 'keytab'
+
+- name: Configure keytab (HDFS keytab) if local keytab exists and remote keytab doesn't exist
+  copy:
+    src: "keytab/paxatadatalib.keytab"
+    dest: "{{ library_storage_keytab }}"
+    owner: paxata
+    mode: 0400
+  when: 
+    - library_storage == 'keytab'
+    - local_keytab_exists.stat.exists
+    - not remote_keytab_exists.stat.exists
+
+- name: Copy JDBC jars to Core Server
+  copy:
+    src: "{{ jdbc_driver_path }}/{{ item.split(\"/\")[-1] }}"
+    dest: /usr/local/paxata/server/drivers/
+    owner: paxata
+    mode: 0755
+  with_items: "{{ jdbc_driver_jars }}"
+  when: (inventory_hostname in groups['core-server'])
+
+#- name: Rename all JDBC jar to have jar extension
+#  shell: for x in /usr/local/paxata/server/drivers/*.txt; do mv "$x" "${x%.txt}.jar"; done
+
+- name: Configure jdbc-driver.properties
+  template:
+    src: "jdbc-driver.properties.j2"
+    dest: "/usr/local/paxata/server/drivers/jdbc-driver.properties"
+    owner: paxata
+    mode: 0644
+  when: (inventory_hostname in groups['core-server'])
+
+- name: Kill any existing paxata-server process
+  shell: "kill -9 $(jps | grep paxata-server.jar | cut -d' ' -f1) || :"
+  ignore_errors: yes
+
+- name: Restart paxata-server service on 1st core server
+  shell: service paxata-server restart
+  # using shell as a workaround since the test rpms dont work with service module
+  args:
+    warn: false # set warn=false to prevent warning
+  register: result
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+
+- debug:
+    msg: "{{ result }}"
+
+- name: Restart paxata-server service on 2nd core servers
+  shell: service paxata-server restart
+  # using shell as a workaround since the test rpms dont work with service module
+  args:
+    warn: false # set warn=false to prevent warning
+  register: result2
+  when: 
+    - ( groups['core-server']|length ) > 1
+    - inventory_hostname == groups['core-server'][1]
+ 
+- debug:
+    msg: "{{ result2 }}"
+
+- name: Restart paxata-server service on 3rd core servers
+  shell: service paxata-server restart
+  # using shell as a workaround since the test rpms dont work with service module
+  args:
+    warn: false # set warn=false to prevent warning
+  register: result3
+  when: 
+    - ( groups['core-server']|length ) > 2
+    - inventory_hostname == groups['core-server'][2]
+ 
+- debug:
+    msg: "{{ result3 }}"
+
+- name: Wait until Paxata Server Port is available
+  wait_for:
+    host: "{{ groups['core-server'][0] }}"
+    port: "{{ jetty_http_port }}"
+    delay: 10
+    timeout: 720
+  when:
+    - inventory_hostname == groups['core-server'][0]
+
+- debug:
+    msg: "instance_count={{ worker_instance_count }} spark_worker_cores={{ spark_worker_cores }} total_core_count={{ worker_core_count }} size_limit {{ file_size_limit }} l_column_limit {{ library_column_limit }} p_column_limit {{ project_column_limit }} l_row_limit {{ library_row_limit }} p_row_limit {{ project_row_limit }} i_row_warning {{ interactive_row_warning }}"
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+
+
+
+#Removing condition for DDL which was restricted to S3 ONLY , now make it avaialable even for hdi3
+- name: Set Guardrail Global Defaults - Enable Direct Data Load -  if installing on AWS instance
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.direct.data.load.allowed&type=default&value={{ enable_direct_data_load }}"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - setglobalguardrails
+
+ 
+- name: Set Guardrail Global Defaults - Automation Enabled to {{ enable_automation }}
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.automation.enabled&type=default&value={{ enable_automation }}"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - setglobalguardrails
+
+- name: Set Guardrail Global Defaults - Enable Column Profiling to {{ enable_column_profiling }}
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.column.profiling.allowed&type=default&value={{ enable_column_profiling }}"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - setglobalguardrails
+
+- name: Set Guardrail Global Defaults - Library File Size Limit {{ file_size_limit }}
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.file.size.limit&type=default&value={{ file_size_limit }}"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - setglobalguardrails
+
+- name: Set Guardrail Global Defaults - Library Column Limit to {{ library_column_limit }}
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.library.column.limit&type=default&value={{ library_column_limit }}"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - setglobalguardrails
+
+- name: Set Guardrail Global Defaults - Project Column Limit to {{ project_column_limit }}
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.project.column.limit&type=default&value={{ project_column_limit }}"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - setglobalguardrails
+
+- name: Set Guardrail Global Defaults - Library Row Limit to {{ library_row_limit }}
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.library.row.limit&type=default&value={{ library_row_limit }}"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - setglobalguardrails
+
+- name: Set Guardrail Global Defaults - Project Row Limit to {{ project_row_limit }}
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.project.row.limit&type=default&value={{ project_row_limit }}"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - setglobalguardrails
+
+- name: Set Guardrail Global Defaults - Interactive Row Warning to {{ interactive_row_warning }}
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.interactive.row.warning&type=default&value={{ interactive_row_warning }}"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - setglobalguardrails
+
+- name: Set Guardrail Global Defaults - Enable Grid Progress Reporting to true
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.pipeline.progress.enabled&type=default&value=true"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - setglobalguardrails
+
+- name: Set Guardrail Global Defaults - Separate Interactive and Batch Row Limits to {{ enable_separate_interactive_batch_row_limits }}
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.activate.interactive.mode&type=default&value={{ enable_separate_interactive_batch_row_limits }}"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - setglobalguardrails
+
+- name: Set Guardrail Global Defaults - Batch Row Limits to {{ batch_project_row_limit }}
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.batch.row.limit&type=default&value={{ batch_project_row_limit }}"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - setglobalguardrails
+
+- name: Set Guardrail Global Defaults - Interactive Per-DataSet Row 'Buffer' Limits to {{ interactive_dataset_row_limit }}
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.interactive.buffer.limit&type=default&value={{ interactive_dataset_row_limit }}"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - setglobalguardrails
+
+- name: Set Guardrail Global Defaults - Daily Automation Job Limits to {{ daily_automation_job_limit }}
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.job.daily.limit&type=default&value={{ daily_automation_job_limit }}"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - setglobalguardrails
+
+- name: Set Guardrail Global Defaults - Weekly Automation Job Limits to {{ weekly_automation_job_limit }}
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.job.weekly.limit&type=default&value={{ weekly_automation_job_limit }}"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - setglobalguardrails
+
+- name: Set Guardrail Global Defaults - Monthly Automation Job Limits to {{ monthly_automation_job_limit }}
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.job.monthly.limit&type=default&value={{ monthly_automation_job_limit }}"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - setglobalguardrails
+
+- name: Set Guardrail Global Defaults - Enable Gateway for Batch Requests to {{ enable_gateway_for_batch_requests }}
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.resource.allocation.enabled&type=default&value={{ enable_gateway_for_batch_requests }}"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - setglobalguardrails
+
+- name: Set Guardrail Global Defaults - Import Thread Limit to {{ import_thread_limit }}
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.import.thread.limit&type=default&value={{ import_thread_limit }}"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - setglobalguardrails
+
+- name: Set Guardrail Global Defaults - Rest Task Limit to {{ rest_task_limit }}
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.rest.task.limit&type=default&value={{ rest_task_limit }}"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - setglobalguardrails
+
+- name: Set Guardrail Global Defaults - Pipeline Task Limit to {{ pipeline_task_limit }}
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.pipeline.task.limit&type=default&value={{ pipeline_task_limit }}"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - setglobalguardrails
+
+- name: Set Guardrail Global Defaults - Library Task Limit to {{ library_task_limit }}
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.library.task.limit&type=default&value={{ library_task_limit }}"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - setglobalguardrails
+
+- name: Set Guardrail Global Defaults - Gateway Cores Per Executor Limit to {{ gateway_cores_per_executor }}
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.batch.yarn.cores.per.executor&type=default&value={{ gateway_cores_per_executor }}"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - setglobalguardrails
+
+- name: Set Guardrail Global Defaults - Gateway Memory Per Executor Limit to {{ gateway_memory_per_executor }}
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.batch.yarn.executor.memory&type=default&value={{ gateway_memory_per_executor }}"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - setglobalguardrails
+
+- name: Set Guardrail Global Defaults - Gateway URL to {{ batch_gateway_url }}
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.batch.gateway.url&type=default&value={{ batch_gateway_url }}"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - groups['gateway'] is defined
+    - groups['gateway']|length > 0
+    - setglobalguardrails
+
+- name: Set Guardrail Global Defaults - Gateway Spark Additional Launch Options to {{ gateway_additional_args }}
+  uri:
+    url: "https://localhost:{{ jetty_https_port }}/rest/guardrails?pretty=true&name=guardrail.batch.additional.options&type=default&value={{ gateway_additional_args }}"
+    method: POST
+    user: "{{ rest_user }}"
+    password: "{{ rest_password }}"
+    validate_certs: no
+    force_basic_auth: yes
+    follow_redirects: all
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+    - groups['gateway'] is defined
+    - groups['gateway']|length > 0
+    - setglobalguardrails
+
+- name: Create /usr/local/paxata/server/test
+  file:
+    path: /usr/local/paxata/server/test
+    state: directory
+    owner: paxata
+    mode: 0755
+
+- name: Copy DataFiller jar and json file to Core Server
+  copy:
+    src: files/paxata-project-test.txt
+    dest: /usr/local/paxata/server/test/paxata-project-tester.jar
+    owner: paxata
+    mode: 0755
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+
+- name: Copy json file to Core Server
+  copy:
+    src: files/2018_2_test.json
+    dest: /usr/local/paxata/server/test/2018_2_test.json
+    owner: paxata
+    mode: 0755
+  when: 
+    - inventory_hostname == groups['core-server'][0]
+
+- name: Configure config.properties for paxata project tester
+  template:
+    src: "config.properties.j2"
+    dest: "/usr/local/paxata/server/test/config.properties"
+    owner: paxata
+    mode: 0644
+
+- name: Run the end to end project test
+  shell: "java -jar /usr/local/paxata/server/test/paxata-project-tester.jar /usr/local/paxata/server/test/config.properties"
+  args:
+    warn: false # set warn=false to prevent warning
+  retries: 1
+  delay: 5
+  register: project_result       
+  until: project_result is succeeded
+  when:
+    - inventory_hostname == groups['core-server'][0]
+- debug:
+    msg: "{{ project_result }}"
+  when:
+    - inventory_hostname == groups['core-server'][0]
+
+
+- name: Start paxata-server service on 3rd core server
+  shell: service paxata-server restart
+  # using shell as a workaround since the test rpms dont work with service module
+  args:
+    warn: false # set warn=false to prevent warning
+  register: result3
+  when:
+    - ( groups['core-server']|length ) > 2
+    - inventory_hostname == groups['core-server'][2]
+  tags:
+    - start-app-core-service
+    - never
+
+- debug:
+    msg: "{{ result3 }}"
+  tags:
+    - start-app-core-service
+    - never
+
+- name: sleep for 10 seconds and continue with next service start
+  wait_for: timeout=10
+  when:
+    - ( groups['core-server']|length ) > 2
+    - inventory_hostname == groups['core-server'][2]
+  tags:
+    - start-app-core-service
+    - never
+
+- name: Start paxata-server service on 2nd core servers
+  shell: service paxata-server restart
+  # using shell as a workaround since the test rpms dont work with service module
+  args:
+    warn: false # set warn=false to prevent warning
+  register: result2
+  when:
+    - ( groups['core-server']|length ) > 1
+    - inventory_hostname == groups['core-server'][1]
+  tags:
+    - start-app-core-service
+    - never
+- debug:
+    msg: "{{ result2 }}"
+  tags:
+    - start-app-core-service
+    - never
+
+- name: sleep for 10 seconds and continue with next service start
+  wait_for: timeout=10
+  when:
+    - ( groups['core-server']|length ) > 1
+    - inventory_hostname == groups['core-server'][1]
+  tags:
+    - start-app-core-service
+    - never
+
+- name: Start paxata-server service on 1st core server
+  shell: service paxata-server restart
+  # using shell as a workaround since the test rpms dont work with service module
+  args:
+    warn: false # set warn=false to prevent warning
+  register: result
+  when:
+    - inventory_hostname == groups['core-server'][0]
+  tags:
+    - start-app-core-service
+    - never
+- debug:
+    msg: "{{ result }}"
+  tags:
+    - start-app-core-service
+    - never
+
+- name: Wait until Paxata Server Port is available
+  wait_for:
+    port: "9080"
+    delay: 10
+    timeout: 720
+  when:
+    - inventory_hostname == groups['core-server'][0]
+  tags:
+    - start-app-core-service
+    - never
+
+
+
+
+- name: Stop paxata-server service on 1st core server
+  shell: service paxata-server stop
+  # using shell as a workaround since the test rpms dont work with service module
+  args:
+    warn: false # set warn=false to prevent warning
+  register: result
+  when:
+    - inventory_hostname == groups['core-server'][0]
+  tags:
+    - stop-app-core-service
+    - never
+- debug:
+    msg: "{{ result }}"
+  when:
+    - inventory_hostname == groups['core-server'][0]
+  tags:
+    - stop-app-core-service
+    - never
+
+
+- name: stop paxata-server service on 2nd core server
+  shell: service paxata-server stop
+  # using shell as a workaround since the test rpms dont work with service module
+  args:
+    warn: false # set warn=false to prevent warning
+  register: result2
+  when:
+    - ( groups['core-server']|length ) > 1
+    - inventory_hostname == groups['core-server'][1]
+  tags:
+    - stop-app-core-service
+    - never
+- debug:
+    msg: "{{ result2 }}"
+  when:
+    - ( groups['core-server']|length ) > 1
+    - inventory_hostname == groups['core-server'][1]
+  tags:
+    - stop-app-core-service
+    - never
+
+
+- name: Stop paxata-server service on 3rd core servers
+  shell: service paxata-server stop
+  # using shell as a workaround since the test rpms dont work with service module
+  args:
+    warn: false # set warn=false to prevent warning
+  register: result3
+  when:
+    - ( groups['core-server']|length ) > 2
+    - inventory_hostname == groups['core-server'][2]
+  tags:
+    - stop-app-core-service
+    - never
+
+- debug:
+    msg: "{{ result3 }}"
+  when:
+    - ( groups['core-server']|length ) > 2
+    - inventory_hostname == groups['core-server'][2]
+  tags:
+    - stop-app-core-service
+    - never
+
+
+
+

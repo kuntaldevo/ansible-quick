@@ -1,0 +1,51 @@
+{
+    "dsId": "d2a978bac1de4a1c9051f155da614bf8",
+    "dsName": "target",
+    "steps": [
+        {
+            "type": "AnchorTable",
+            "active": true,
+            "publishPoints": null,
+            "annotation": null,
+            "facets": null,
+            "importStep": {
+                "type": "Import",
+                "active": null,
+                "publishPoints": null,
+                "annotation": null,
+                "libraryId": "5e85bc441acd4d10a934d6965d7e7aa4",
+                "libraryVersion": 1,
+                "columns": [
+                    {
+                        "hidden": false,
+                        "columnDisplayName": "Name",
+                        "columnType": "String",
+                        "columnName": "Name"
+                    },
+                    {
+                        "hidden": false,
+                        "columnDisplayName": "Value",
+                        "columnType": "Number",
+                        "columnName": "Value"
+                    }
+                ],
+                "samplingConfig": null,
+                "datagen": false,
+                "interactiveBuffer": 5000000,
+                "libraryIdWithVersion": "5e85bc441acd4d10a934d6965d7e7aa4_1",
+                "facets": null,
+                "muteFacets": null
+            },
+            "muteFacets": null,
+            "$validationErrors": {
+                "Error": [
+                    
+                ],
+                "Warning": [
+                    
+                ]
+            },
+            "color": "rgba(174, 50, 123, 1)"
+        }
+    ]
+}

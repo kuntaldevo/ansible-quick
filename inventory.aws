@@ -1,0 +1,55 @@
+# Sample AWS Inventory Setup:
+# All servers in the same subset, same VPC, security groups that can talk to each other on all TCP ports
+# 9+  instances
+# 3 mongo
+# 1 or 2 paxata-server
+# 1 spark master with pipeline
+# 4 or more Apache spark on EC2
+# 1 optional Gateway on EMR for Dynamic Batch.
+
+
+[mongodb]
+mongo1 ansible_host=10.240.63.71 votes=1 priority=1 private_ip=10.240.63.71 instance_id=i-05d70d688b349600a
+## Add 2 more instances below to form replicaSet mongoDB (required for Paxata Production)
+mongo2 ansible_host=10.240.63.199 votes=0 priority=0 private_ip=10.240.63.199  instance_id=i-0678b0369e5fc3780
+mongo3 ansible_host=10.240.63.64 votes=0 priority=0 private_ip=10.240.63.64  instance_id=i-0f88a3c5cc65154fe
+
+[core-server]
+pax-ui ansible_host=10.240.63.71 private_ip=10.240.63.71 instance_id=i-05d70d688b349600a
+#Optional Automation Server.
+#pax-auto ansible_host=10.240.63.64 private_ip=10.240.63.64 instance_id=i-0f88a3c5cc65154fe
+
+[pipeline]
+master ansible_host=10.240.63.103 private_ip=10.240.63.103 instance_id=i-0fe14a9412b312e6d
+
+#Enable Gateway only if you are using EMR Spark  for dynamic Batch
+#[gateway]
+#master ansible_host=192.168.60.103 private_ip=192.168.60.103 instance_id=i-0fe14a9412b312e6d
+
+[spark-master]
+master ansible_host=10.240.63.103 private_ip=10.240.63.103 instance_id=i-0fe14a9412b312e6d
+
+[spark-worker]
+worker1 ansible_host=10.240.63.37 private_ip=10.240.63.37 instance_id=i-01d661c14d7b6fcc2
+worker2 ansible_host=10.240.63.183 private_ip=10.240.63.183 instance_id=i-079826e92f3f043cf
+worker3 ansible_host=10.240.63.164 private_ip=10.240.63.164 instance_id=i-068686fb8af501c39
+worker4 ansible_host=10.240.63.143 private_ip=10.240.63.143 instance_id=i-068686fb8af501f45
+## Add more instances below to run apache-spark-worker and pipeline executor to meet your pax-NNN requirement (example 8 instances x 16 cores)
+
+[ec2:children]
+mongodb
+core-server
+pipeline
+#Enable Gateway only if you are using EMR Spark  for dynamic Batch
+#gateway
+spark-master
+spark-worker
+
+# Variables that will be applied to EC2 servers
+[ec2:vars]
+ansible_ssh_user=centos
+ansible_ssh_private_key_file=~/dev-keypair-west.pem
+#Variables to manager instances
+vpc_subnet=subnet-56a26a1e
+instance_tag=apatil-ansible-test
+region=us-west-2

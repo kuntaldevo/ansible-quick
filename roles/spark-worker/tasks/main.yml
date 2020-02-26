@@ -1,0 +1,370 @@
+---
+
+# tasks file for spark-master
+- name: Set Spark Worker Environment Variable
+  set_fact:
+    spark_worker_memory: "{{ spark_worker_memory }}"
+    spark_worker_cores: "{{ spark_worker_cores }}"
+    minimum_iops_per_core: "{{ minimum_iops_per_core }}"
+
+- name: Set Spark Worker User Group for Standalone Apache Spark
+  set_fact:
+    spark_user: root
+    spark_group: root
+  tags:
+    - iops_test
+
+- name: Set Spark Worker User Group for Existing Spark on Yarn
+  set_fact:
+    spark_user: yarn
+    spark_group: yarn
+  when:
+    - use_existing_spark_on_yarn
+
+- debug: msg="calculated spark_worker_cores (based on ansible_memtotal_mb and minimum_spark_memory_per_spark_core_mb)=={{ (ansible_memtotal_mb*executor_memory_ram_ratio/minimum_spark_memory_per_spark_core_mb)|round|int }}"
+- debug: msg="ansible_processor_cores=={{ ansible_processor_cores }}"
+- debug: msg="minimum of the above (net result spark_worker_cores)=={{ spark_worker_cores }}"
+
+
+# Begin Mount FileSystem on Instance Store Device
+# If findmnt device_name == null, then mount directory on pipeline_cache_dir, else if get mount point and check if mount point is (parent) directory pipeline_cache_dir, then do mount or create file system, else fail the task.
+- debug: msg="device={{ item.device }} mount={{ item.mount }}"
+  with_items:
+    - "{{ ansible_mounts }}"
+  tags:
+    - iops_test
+
+- name: findmnt {{ spark_worker_device_name }} -o TARGET -nfs
+  shell: "findmnt {{ spark_worker_device_name }} -o TARGET -nfs"
+  register: instance_store_mounted_dir_raw
+  when:
+    - spark_worker_cache_dir is defined
+    - spark_worker_device_name is defined
+  tags:
+    - iops_test
+
+- name: set_fact for instance_store_mounted_dir
+  set_fact:
+    instance_store_mounted_dir: "{{ instance_store_mounted_dir_raw.stdout }}"
+    instance_store_device_mounted: "{{ instance_store_mounted_dir_raw.stdout is search('/') }}"
+  when:
+    - spark_worker_cache_dir is defined
+    - spark_worker_device_name is defined
+    - instance_store_mounted_dir_raw is defined
+  tags:
+    - iops_test
+
+- debug: msg="instance_store_mounted_dir={{ instance_store_mounted_dir }} instance_store_device_mounted={{ instance_store_device_mounted }}"
+  when:
+    - spark_worker_cache_dir is defined
+    - spark_worker_device_name is defined
+    - instance_store_mounted_dir_raw is defined
+  tags:
+    - iops_test
+
+- name: Fail if {{ spark_worker_cache_dir }} is not under {{ spark_worker_device_name }} mount point - {{ instance_store_mounted_dir }}
+  fail:
+    msg: "ERROR: {{ spark_worker_cache_dir }} is NOT under existing {{ spark_worker_device_name }} mounted directory - {{ instance_store_mounted_dir }}. Two options: 1. Set spark_worker_cache_dir={{ instance_store_mounted_dir }} in playbook.yml and rerun playbook; OR 2. On all spark worker hosts, remove {{ spark_worker_device_name }} mount point line from /etc/fstab, reboot instances and rerun playbook."
+  when: 
+    - spark_worker_cache_dir is defined
+    - spark_worker_device_name is defined
+    - instance_store_mounted_dir is defined
+    - instance_store_device_mounted
+    - instance_store_mounted_dir not in spark_worker_cache_dir
+  tags:
+    - iops_test
+
+- name: Create a ext4 filesystem on {{ spark_worker_device_name }}
+  filesystem:
+    fstype: ext4
+    dev: "{{ spark_worker_device_name }}"
+  when:
+    - spark_worker_cache_dir is defined
+    - spark_worker_device_name is defined
+    - not instance_store_device_mounted
+  tags:
+    - iops_test
+
+- name: Mount {{ spark_worker_device_name }} to {{ spark_worker_cache_dir }}
+  mount:
+    path: "{{ spark_worker_cache_dir }}"
+    src: "{{ spark_worker_device_name }}"
+    fstype: ext4
+    opts: auto,defaults,nofail
+    state: mounted
+  when:
+    - spark_worker_cache_dir is defined
+    - spark_worker_device_name is defined
+    - not instance_store_device_mounted
+  tags:
+    - iops_test
+
+- name: df -h to see list of filesystems
+  shell: "df -h"
+  register: df_h
+  when: spark_worker_device_name is defined
+  tags:
+    - iops_test
+
+- debug: msg="{{ df_h.stdout_lines }}"
+  when: spark_worker_device_name is defined
+  tags:
+    - iops_test
+
+# End Mount FileSystem on Instance Store Device
+
+- name: Create Cache Directory on Workers
+  file:
+    path: "{{ spark_worker_cache_dir }}"
+    state: directory
+    owner: "{{ spark_user }}"
+    group: "{{ spark_group }}"
+    mode: 0755
+  when:
+    - spark_worker_cache_dir is defined
+  tags:
+    - iops_test
+
+- name: Install fio
+  yum:
+    name: fio
+    state: present
+  when:
+    - spark_worker_cache_dir is defined
+  tags:
+    - iops_test
+
+- name: Do IOPS test
+  shell: "fio --directory={{ spark_worker_cache_dir }} --name fio_test_file --direct=1 --rw=randwrite --bs=16k --size=100M --numjobs=16 --time_based --runtime=5 --group_reporting --norandommap --minimal | cut -d';' -f49"
+  register: iops_result
+  when:
+    - spark_worker_cache_dir is defined
+  tags:
+    - iops_test
+
+- name: Clean existing Worker Cache Directory files including fio_test_file
+  shell: "rm -rf {{ spark_worker_cache_dir }}/*"
+  ignore_errors: yes
+  when:
+    - spark_worker_cache_dir is defined
+  args:
+    warn: false # set warn=false to prevent warning
+
+- name: Fail if Write IOPS ({{ iops_result.stdout|int }}) is below minimum required {{ spark_worker_cores|int }} * {{ minimum_iops_per_core|int }}
+  fail:
+    msg: "{{ iops_result.stdout|int }} is below minimum required ({{ minimum_iops_per_core|int }} * {{ spark_worker_cores|int }}) . Please point {{ spark_worker_cache_dir }} to high-IOPS storage device (such as SSD)."
+  when: 
+    - iops_result.stdout|int < ( ( minimum_iops_per_core|int *  spark_worker_cores|int ) )
+    - spark_worker_cache_dir is defined
+  tags:
+    - iops_test
+
+- name: get free disk capacity from {{ spark_worker_cache_dir }}
+  shell: "df -Pm {{ spark_worker_cache_dir }} | tail -1 | awk '{print $4}'"
+  register: df_output
+
+- debug: msg="Available disk space for {{ spark_worker_cache_dir }} is {{ df_output.stdout|int }}mb"
+  when: 
+    - spark_worker_cache_dir is defined
+
+- name: Fail if free disk capcity is less than 10gb
+  fail:
+    msg: "Error: {{ df_output.stdout|int }} is below 10gb. Please make sure {{ spark_worker_device_name }} is specified in playbook.yml so that {{ spark_worker_cache_dir }} is mounted automatically."
+  when: 
+    - "df_output.stdout|int < 10000"
+    - spark_worker_cache_dir is defined
+ 
+- name: Set spark disk capacity Facts
+  set_fact:
+    spark_worker_cache_capacity_mb: "{{ ((df_output.stdout|int)*0.75)|round|int }}"
+
+
+
+- name: Copy Spark TGZ sha512 file from ansible controller
+  copy:
+    src: "{{ spark_download_path }}/{{spark_filename }}.tgz.sha512"
+    dest: "{{ spark_tgz_sha512_local }}"
+  when:
+    - not use_existing_spark_on_yarn
+
+- name: Register sha512 to a variable
+  shell: "cat {{ spark_tgz_sha512_local }}"
+  register: spark_tgz_sha512
+  when:
+    - not use_existing_spark_on_yarn
+
+- debug: 
+      msg: "spark_tgz_sha512={{ spark_tgz_sha512.stdout | regex_replace( spark_filename + '.tgz: ', '') }}"
+  when:
+    - not use_existing_spark_on_yarn
+
+- name: Copy Spark TGZ  file from ansible controller
+  copy:
+    src: "{{ spark_download_path }}/{{spark_filename }}.tgz"
+    dest: "{{ spark_tgz_local }}"
+#    checksum: "sha512:{{ spark_tgz_sha512.stdout | regex_replace( spark_filename + '.tgz: ', '') }}"
+    owner: "{{ spark_user }}"
+    group: "{{ spark_group }}"
+    mode: 0755
+  when:
+    - not use_existing_spark_on_yarn
+
+
+- name: Does spark-core*{{ spark_version }}* jar exist already
+  find:
+    paths: "{{ spark_dir }}/jars/"
+    patterns: "spark-core*{{ spark_version }}*"
+  register: spark_version_matched
+  when:
+    - not use_existing_spark_on_yarn
+
+- debug: msg="Match found? {{ spark_version_matched.matched }}"
+  when:
+    - not use_existing_spark_on_yarn
+
+- name: Does hadoop-common-{{ hadoop_version }} jar exist already
+  find:
+    paths: "{{ spark_dir }}/jars/"
+    patterns: "hadoop-common-{{ hadoop_version }}*"
+  register: hadoop_version_matched
+  when:
+    - not use_existing_spark_on_yarn
+
+- debug: msg="Match found? {{ hadoop_version_matched.matched }}"
+  when:
+    - not use_existing_spark_on_yarn
+
+- name: Stop Legacy spark-worker
+  shell: "sh {{ old_spark_dir }}/sbin/stop-slave.sh || :"
+  ignore_errors: yes
+  args:
+    warn: false # set warn=false to prevent warning
+  when:
+    - not use_existing_spark_on_yarn
+
+- name: Kill any remaining pipeline-executor process
+  shell: "kill -9 $(jps | grep CoarseGrainedExecutorBackend | cut -d' ' -f1) || :"
+  ignore_errors: yes
+
+- name: stop spark-worker
+  shell: "{{ spark_dir }}/sbin/stop-slave.sh || :"
+  ignore_errors: yes
+  args:
+    warn: false # set warn=false to prevent warning
+  when:
+    - not use_existing_spark_on_yarn
+
+- name: Kill any remaining Worker process
+  shell: "kill -9 $(jps | grep Worker | cut -d' ' -f1) || :"
+  ignore_errors: yes
+  when:
+    - not use_existing_spark_on_yarn
+
+- name: Delete Legacy spark directory
+  file:
+    path: "{{ old_spark_dir }}/"
+    state: absent
+  ignore_errors: yes
+
+- name: Delete Spark Directory when existing hadoop version or spark version don't match with the spark tgz
+  file:
+    path: "{{ item }}"
+    state: absent
+  with_items: 
+    - "{{ spark_dir }}/"
+    - "{{ spark_worker_dir }}/"
+    - "{{ spark_log_dir }}/"
+    - "{{ spark_local_dirs }}/"
+    - "{{ spark_pid_dir }}/"
+  when: not use_existing_spark_on_yarn and (hadoop_version_matched.matched == 0 or spark_version_matched.matched == 0)
+
+- name: Create Spark Directory.
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ spark_user }}"
+    group: "{{ spark_group }}"
+    mode: 0755
+  with_items: 
+    - "{{ spark_dir }}/"
+    - "{{ spark_worker_dir }}/"
+    - "{{ spark_log_dir }}/"
+    - "{{ spark_local_dirs }}/"
+    - "{{ spark_pid_dir }}/"
+  when: not use_existing_spark_on_yarn and (hadoop_version_matched.matched == 0 or spark_version_matched.matched == 0)
+    
+- name: Unzip Spark TGZ Pakcage
+  unarchive:
+    remote_src: yes
+    src: "{{ spark_tgz_local }}"
+    dest: "{{ spark_dir }}/"
+  when: not use_existing_spark_on_yarn and (hadoop_version_matched.matched == 0 or spark_version_matched.matched == 0)
+
+- name: Move directory when it's new installaiton or upgrade
+  shell: "mv {{ spark_dir }}/{{ spark_filename }}/* {{ spark_dir }}/; rmdir {{ spark_dir }}/{{ spark_filename }}"
+  when: not use_existing_spark_on_yarn and (hadoop_version_matched.matched == 0 or spark_version_matched.matched == 0)
+
+- name: Set spark-env.sh
+  template:
+    src: "spark-env.sh.j2"
+    dest: "{{ spark_dir }}/conf/spark-env.sh"
+    owner: "{{ spark_user }}"
+    group: "{{ spark_group }}"
+    mode: 0644
+  when:
+    - not use_existing_spark_on_yarn
+
+- name: Update /etc/security/limits.conf for soft nofile
+  lineinfile: dest=/etc/security/limits.conf 
+              line="{{ spark_user }} soft nofile 100000"
+- name: Update /etc/security/limits.conf for hard nofile
+  lineinfile: dest=/etc/security/limits.conf 
+              line="{{ spark_user }} hard nofile 100000"
+- name: Update /etc/security/limits.conf for soft noproc
+  lineinfile: dest=/etc/security/limits.conf 
+              line="{{ spark_user }} soft noproc 5000"
+- name: Update /etc/security/limits.conf for hard noproc
+  lineinfile: dest=/etc/security/limits.conf 
+              line="{{ spark_user }} hard noproc 5000"
+
+- name: start spark-worker
+  command: "sh {{ spark_dir }}/sbin/start-slave.sh spark://{{ groups['spark-master'][0] }}:7077"
+  register: start_result
+  when:
+    - not use_existing_spark_on_yarn
+- debug: msg={{ start_result.stdout }}
+  when:
+    - not use_existing_spark_on_yarn
+
+- name: Start spark-worker
+  command: "sh {{ spark_dir }}/sbin/start-slave.sh spark://{{ groups['spark-master'][0] }}:7077"
+  register: start_result
+  when:
+    - not use_existing_spark_on_yarn
+  tags:
+    - start-app-spark
+    - never
+
+- debug: msg={{ start_result.stdout }}
+  when:
+    - not use_existing_spark_on_yarn
+  tags:
+    - start-app-spark
+    - never
+
+- name: Stop spark-worker
+  command: "sh {{ spark_dir }}/sbin/stop-slave.sh"
+  register: stop_result
+  when:
+    - not use_existing_spark_on_yarn
+  tags:
+    - stop-app-spark
+    - never
+
+- debug: msg={{ stop_result.stdout }}
+  when:
+    - not use_existing_spark_on_yarn
+  tags:
+    - stop-app-spark
+    - never
+
