@@ -50,7 +50,7 @@ This Ansible automated installation allows Paxata administrators to perform auto
 
 
 
-## Step 2 of 4 -- Provision Target Servers , specs as documented in https://docs.google.com/spreadsheets/d/1IOECESjo9wCl7d9DRBv7EU6o0GZoo6jkJmnh4SBPies/edit?ts=5c531359#gid=0
+## Step 2 of 4 -- Provision Target Servers 
 
 * S3 Bucket for Paxata Data Library and MongoDB Backup
   
